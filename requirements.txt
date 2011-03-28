@@ -1,0 +1,68 @@
+The requirements imposed on a parser for an editor are vastly
+different from those for a compiler or source refactoring tool.
+
+1. Must be INCREMENTAL: feedback from local editing must be swift
+   regardless of file size.  Editing a distant part of the file may be
+   slow at first.
+
+2. Must be PATH-INDEPENDENT: fontification must be consistent no
+   matter how the user chose to view the file, what font-lock options
+   he used, or how the text came to be in the buffer.
+
+3. Must be COMPOSABLE: more than ever, we see files composed of a
+   mixture of two, three, or four languages. The current approach to
+   editing these files, rapid switching of major modes, is delicate
+   and produces poor results despite heroic efforts.  It must be
+   possible to create a mode that edits the union of arbitrary
+   languages.
+
+4. Must be CUSTOMIZABLE: before preprocessing, users' files often bear
+   little resemblance to the language in which they're supposedly
+   written.  We cannot predict these variances in general, so it must
+   be possible for a user to easily customize parsing to suit the
+   particular dialects he needs.
+
+   In addition, we should not require any tools outside Emacs proper
+   to perform customization, and it must be possible to customize
+   parsing on a buffer-by-buffer basis using hooks.
+
+5. Must be ROBUST: users edit files constantly.  We must be able to
+   provide reasonable fontification and syntactic feedback given the
+   presence of partial and invalid input.
+   
+6. Must have LOW LATENCY: users may tolerate delays between editing
+   and the appearance of certain syntactic highlighting, but will
+   absolutely not tolerate an unresponsible editor.  Because Emacs is
+   single-threaded, we must be able to break highlighting work into
+   small chunks, and we must be able to interrupt ongoing formatting
+   if user input appears.
+
+7. Must be MAINTAINABLE: unclear parsing code incurs a high maintence
+   cost because bugs are often subtle, and it makes the code brittle
+   because it becomes difficult to convince oneself that a change or
+   new feature does not cause regressions elsewhere.  Parsing code
+   should be as clear and declarative as possible, but not to the
+   extent of diminishing clarity.
+
+8. Must INTEGRATE WITH CEDET: there is no use re-inventing the wheel.
+   CEDET includes a huge variety of mature tools to work with source
+   code semantically.  We're talking about a new parser, not an
+   entirely new piece of infrastructure.
+
+---
+
+implications
+
+- external parser generators are right out
+
+- a parser generator written in elisp seems feasible, but known
+  packages fail on one of the above requirements, except perhaps the
+  incomplete but promising Gazelle parser.  Even that parser
+  generator, however require the porting to elisp of thousands of
+  lines of C code, and the resulting codebase would immediately begin
+  to diverge from upstream.
+
+  Unfortunately, the two existing CEDET parser generators, bovine and
+  wisent, require external files.
+
+- 
