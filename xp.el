@@ -1,5 +1,4 @@
 (require 'cl)
-(require 'eieio)
 
 (defstruct (xp-rule
             (:constructor xp--make-rule)
@@ -210,7 +209,7 @@ instance. On failure, raise an error.
                                 kw-args
                                 &key
                                 environment
-                                stop)
+                                (stop-p #'ignore))
   
   "Expand the rule definition RD in PARSER.
 
@@ -221,9 +220,9 @@ If ENVIRONMENT is supplied, use it for lexical name lookups. It
 defaults to the top-level lexical environment for PARSER's
 grammar.
 
-STOP is a predicate. It is called with one argument, the rule
-we're about to expand. If it returns t, we return that rule
-instead of further expanding it.
+STOP-P is a predicate function. It is called with one argument,
+the rule we're about to expand. If it returns t, we return that
+rule instead of further expanding it.
 
 If ENVIRONMENT is present, use it to expand the value of RD.
 "
@@ -244,37 +243,70 @@ If ENVIRONMENT is present, use it to expand the value of RD.
     ;; another rule definition back.
     (error "Invalid generated rule %S" rd))
    
-   ((funcall stop rd)
+   ((funcall stop-p rd)
+    ;; User told us to stop
     rd)
-
    
-   
-   )
-  
-  (etypecase rd
-    (xp-compiled-rule
-     ;; We're done.
-     rd)
-             
-    ((or symbol list)
-     ;; We can still do more expansions here.
-     (apply #'xp-parser--compile-rule parser rd kw-args))))
+   (t
+    ;; Expand the rule again
+    (apply #'xp-parser--compile-rule parser rd kw-args))))
 
 (put 'xp-grammar-define-rule 'lisp-indent-function 3)
 
-(defun xp--:-rule (args)
-  "Magic for sequences."
+(defun* xp--:-rule (env terms accum)
+  "Compile sequences magically."
 
+  ;; (XXX: We also need to handle annotating the parse tree with
+  ;; attributes as we go, but we can do that later.  For now, let's
+  ;; focus on the match.)
+  ;;
+  ;; We need to build up a sequence of states we enter when we match a
+  ;; seqeuence so we can point subrules at the "next" state. For
+  ;; example, consider (: a b c), which parses three terms.
   ;; 
-  
+  ;; We have four states:
+  ;;
+  ;;  1. before a
+  ;;  2. after a, before b
+  ;;  3. after b, before c
+  ;;  4. after c
+  ;;
+  ;; When we're in state N and need to match term T next, we need to
+  ;; pass into T enough information to enter state N+1 --- that way,
+  ;; we can pick up where we left off if T succeeds or let T backtrack
+  ;; if appropriate.
+  ;; 
+  ;; We model each state as a compiled function and build these states
+  ;; recursively.  We keep track of the number of terms we have so
+  ;; far.
+  ;;
+  (check-type terms list)
+  (check-type accum integer)
+
+  (let (next-state)
+    
+    (cond ((null terms)
+           ;; We're the last term. accum contains the number of items
+           ;; we've successfully parsed so far, which XXX will be the
+           ;; number of items on the data stack?
+           )
+
+          (t
+           ;; We have items left to parse
+           (setf next-state (xp--:-rule env (rest terms) (1+ accum)))
+           
+           )
+        
+          ))
+
   )
 
-(defun xp--*-rule (args)
+(defun* xp--*-rule (env term)
   "Magic for repetition."
   
   )
 
-(defun xp--/-rule (args)
+(defun* xp--/-rule (env terms)
   "Magic for prioritized choice."
 
   
@@ -288,14 +320,14 @@ If ENVIRONMENT is present, use it to expand the value of RD.
 
     ;; Create magic
     
-    (xp-grammar-define-rule root : (&rest args)
-      (xp--:-rule args))
-
-    (xp-grammar-define-rule root * (&rest args)
-      (xp--*-rule args))
+    (xp-grammar-define-rule root : (&environment env &rest terms)
+      (xp--:-rule env env terms 0))
     
-    (xp-grammar-define-rule root / (&rest args)
-      (xp--/-rule args))
+    (xp-grammar-define-rule root * (&environment env term)
+      (xp--*-rule env env term))
+    
+    (xp-grammar-define-rule root / (&environment env &rest terms)
+      (xp--/-rule env env terms))
     
     root)
   
