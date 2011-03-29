@@ -1,36 +1,36 @@
 (require 'cl)
 
-(defstruct (xp-rule
-            (:constructor xp--make-rule)
-            (:conc-name xp-rule--))
-  "A rule in an xp grammar."
+(defstruct (jz-rule
+            (:constructor jz--make-rule)
+            (:conc-name jz-rule--))
+  "A rule in an jz grammar."
   
   name
   args
   definer-function)
 
-(defstruct (xp-compiled-rule
-            (:constructor xp--make-compiled-rule)
-            (:conc-name xp-compiled-rule--))
+(defstruct (jz-compiled-rule
+            (:constructor jz--make-compiled-rule)
+            (:conc-name jz-compiled-rule--))
   "A compiled rule in a particular parser."
 
-  ;; the xp-parser for which we were compiled
+  ;; the jz-parser for which we were compiled
   parser
 
   ;; function object that begins matching this rule
   matcher-function)
 
-(defstruct (xp-grammar
-            (:constructor xp--make-grammar)
-            (:conc-name xp-grammar--))
-  "An xp grammar for some language."
+(defstruct (jz-grammar
+            (:constructor jz--make-grammar)
+            (:conc-name jz-grammar--))
+  "An jz grammar for some language."
   
-  ;; hash table mapping rule names (symbols) to xp-rule instances.
+  ;; hash table mapping rule names (symbols) to jz-rule instances.
   rules)
 
-(defstruct (xp-parser
-            (:constructor xp--make-parser)
-            (:conc-name xp-parser--))
+(defstruct (jz-parser
+            (:constructor jz--make-parser)
+            (:conc-name jz-parser--))
   
   "A compiled parser that can be used to transform a series of 
 tokens into an AST."
@@ -41,7 +41,7 @@ tokens into an AST."
   ;; The initial state of this parser
   initial-state
 
-  ;; A map of rule expansions.
+  ;; A map of rule ejzansions.
   ;;
   ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N),
   ;; and the hash table is a :test 'equal table.
@@ -51,9 +51,9 @@ tokens into an AST."
   ;;
   states)
 
-(defstruct (xp-state
-            (:constructor xp--make-state)
-            (:conc-name xp--state))
+(defstruct (jz-state
+            (:constructor jz--make-state)
+            (:conc-name jz--state))
   
   "A particular state of a parse operation."
 
@@ -61,15 +61,15 @@ tokens into an AST."
   parser
 
   ;; Stack (lisp list) of backtracking alternatives. Each entry is an
-  ;; xp-choice-point instance.
+  ;; jz-choice-point instance.
   choice-points
 
   ;; Stack (lisp list) of data values to use when we don't backtrack.
   data)
 
-(defstruct (xp-environment
-            (:constructor xp--make-environment)
-            (:conc-name xp--environment))
+(defstruct (jz-environment
+            (:constructor jz--make-environment)
+            (:conc-name jz--environment))
 
   "A lexical environment used during rule compilation."
 
@@ -77,11 +77,11 @@ tokens into an AST."
   
   )
 
-(defun* xp-make-empty-grammar ()
+(defun* jz-make-empty-grammar ()
   "Create a new empty grammar."
-  (xp--make-grammar :rules (make-hash-table)))
+  (jz--make-grammar :rules (make-hash-table)))
 
-(defmacro* xp-grammar-define-rule (grammar rule-name args &body body)
+(defmacro* jz-grammar-define-rule (grammar rule-name args &body body)
   "Define or redefine a rule in a grammar.
 
 GRAMMAR gives the grammar in which to define the rule, identified
@@ -158,10 +158,10 @@ forms:
   be replaced by the previous definition of RULE-NAME in GRAMMAR.
 "
 
-  `(xp-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
+  `(jz-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
 
-(defun* xp-grammar--%define-rule (grammar rule-name args &rest FORMS)
-  "Implementation of `xp-grammar-define-rule'.
+(defun* jz-grammar--%define-rule (grammar rule-name args &rest FORMS)
+  "Implementation of `jz-grammar-define-rule'.
 
 All the arguments have the same meaning."
 
@@ -170,13 +170,13 @@ All the arguments have the same meaning."
 
   (puthash rule-name
            `(lambda ,args ,@FORMS)
-           (xp-grammar-rules grammar)))
+           (jz-grammar-rules grammar)))
 
-(defun* xp-parser--compile-rule-1 (parser rd &optional environment)
-  "Expand a rule RD once and return the expanded rule.
+(defun* jz-parser--compile-rule-1 (parser rd &optional environment)
+  "Ejzand a rule RD once and return the ejzanded rule.
 
 RD is any legal rule definition. Return another rule
-definition (which will always be a list) or an xp-compiled-rule
+definition (which will always be a list) or an jz-compiled-rule
 instance. On failure, raise an error.
 "
 
@@ -185,35 +185,35 @@ instance. On failure, raise an error.
   (etypecase rd
     (symbol
      ;; A bare symbol, rule, is equivalent to (rule).
-     (xp-parser--compile-rule-1 parser (list rd) environment))
+     (jz-parser--compile-rule-1 parser (list rd) environment))
 
-    (xp-compiled-rule
+    (jz-compiled-rule
      ;; We're done.
      rd)
 
     (list
      ;; Decode the rule
      (let* ((rule-def (gethash (car rd)
-                               (xp-grammar--rules
-                                (xp-parser--grammar parser)))))
+                               (jz-grammar--rules
+                                (jz-parser--grammar parser)))))
        
        (when rule-def
          (setf rule-def
-               (apply (xp-rule--definer-function rule-def)
+               (apply (jz-rule--definer-function rule-def)
                       (rest rd))))
 
        rule-def))))
 
-(defun* xp-parser--compile-rule (parser rd
+(defun* jz-parser--compile-rule (parser rd
                                 &rest
                                 kw-args
                                 &key
                                 environment
                                 (stop-p #'ignore))
   
-  "Expand the rule definition RD in PARSER.
+  "Ejzand the rule definition RD in PARSER.
 
-This function expands RD completely, yielding an xp-compiled-rule
+This function ejzands RD completely, yielding an jz-compiled-rule
 instance. Throws on error.
 
 If ENVIRONMENT is supplied, use it for lexical name lookups. It
@@ -221,12 +221,12 @@ defaults to the top-level lexical environment for PARSER's
 grammar.
 
 STOP-P is a predicate function. It is called with one argument,
-the rule we're about to expand. If it returns t, we return that
-rule instead of further expanding it.
+the rule we're about to ejzand. If it returns t, we return that
+rule instead of further ejzanding it.
 
-If ENVIRONMENT is present, use it to expand the value of RD.
+If ENVIRONMENT is present, use it to ejzand the value of RD.
 "
-  (setf rd (xp-parser--compile-rule-1 parser rd environment))
+  (setf rd (jz-parser--compile-rule-1 parser rd environment))
 
   (when (symbolp rd)
     ;; A bare symbol is equivalent to calling a rule definition with no
@@ -234,7 +234,7 @@ If ENVIRONMENT is present, use it to expand the value of RD.
     (setf rd (list rd)))
   
   (cond
-   ((xp-compiled-rule-p rd)
+   ((jz-compiled-rule-p rd)
     ;; We're done.
     rd)
    
@@ -248,12 +248,12 @@ If ENVIRONMENT is present, use it to expand the value of RD.
     rd)
    
    (t
-    ;; Expand the rule again
-    (apply #'xp-parser--compile-rule parser rd kw-args))))
+    ;; Ejzand the rule again
+    (apply #'jz-parser--compile-rule parser rd kw-args))))
 
-(put 'xp-grammar-define-rule 'lisp-indent-function 3)
+(put 'jz-grammar-define-rule 'lisp-indent-function 3)
 
-(defun* xp--:-rule (env terms accum)
+(defun* jz--:-rule (env terms accum)
   "Compile sequences magically."
 
   ;; (XXX: We also need to handle annotating the parse tree with
@@ -293,7 +293,7 @@ If ENVIRONMENT is present, use it to expand the value of RD.
 
           (t
            ;; We have items left to parse
-           (setf next-state (xp--:-rule env (rest terms) (1+ accum)))
+           (setf next-state (jz--:-rule env (rest terms) (1+ accum)))
            
            )
         
@@ -301,33 +301,33 @@ If ENVIRONMENT is present, use it to expand the value of RD.
 
   )
 
-(defun* xp--*-rule (env term)
+(defun* jz--*-rule (env term)
   "Magic for repetition."
   
   )
 
-(defun* xp--/-rule (env terms)
+(defun* jz--/-rule (env terms)
   "Magic for prioritized choice."
 
   
   
   )
 
-(defconst xp-root-grammar
+(defconst jz-root-grammar
 
-  (let ((root (xp--make-grammar
+  (let ((root (jz--make-grammar
                :rules (make-hash-table :test 'equal))))
 
     ;; Create magic
     
-    (xp-grammar-define-rule root : (&environment env &rest terms)
-      (xp--:-rule env env terms 0))
+    (jz-grammar-define-rule root : (&environment env &rest terms)
+      (jz--:-rule env env terms 0))
     
-    (xp-grammar-define-rule root * (&environment env term)
-      (xp--*-rule env env term))
+    (jz-grammar-define-rule root * (&environment env term)
+      (jz--*-rule env env term))
     
-    (xp-grammar-define-rule root / (&environment env &rest terms)
-      (xp--/-rule env env terms))
+    (jz-grammar-define-rule root / (&environment env &rest terms)
+      (jz--/-rule env env terms))
     
     root)
   
@@ -335,40 +335,40 @@ If ENVIRONMENT is present, use it to expand the value of RD.
   "The grammar inherited by all other grammars.")
 
 
-(defun* xp-grammar-include (grammar other-grammar)
+(defun* jz-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
   
   )
 
-(defun* xp-parser--precompile-rule (parser))
+(defun* jz-parser--precompile-rule (parser))
 
-(defun* xp-grammar-create-parser (grammar top-rd)
-  "Compiles grammar GRAMMAR into a xp-parser."
+(defun* jz-grammar-create-parser (grammar top-rd)
+  "Compiles grammar GRAMMAR into a jz-parser."
 
   ;; First, create a basic parser.
   
-  (let* ((parser (xp--make-parser
+  (let* ((parser (jz--make-parser
                   :grammar grammar
                   :states (make-hash-table :test 'equal))))
 
     ;; Then, eagerly initialize the rule tree.
-    (setf (xp-parser--initial-state parser)
-          (xp-parser--compile-rule top-rd))
+    (setf (jz-parser--initial-state parser)
+          (jz-parser--compile-rule top-rd))
     
     ;; Parser is now ready to use to begin parsing
     parser))
 
-(defun* xp-state++ (state)
+(defun* jz-state++ (state)
   "Perform one step of a parse.
 
 Update STATE by side effect, calling preconfigured callback
 functions as needed.
 "
-  (funcall (pop (xp-state-control-stack state))
+  (funcall (pop (jz-state-control-stack state))
            state))
 
-(xp-make-grammar 
-  `((:import xp-base-grammar :as x)
+(jz-make-grammar 
+  `((:import jz-base-grammar :as x)
 
     (hello-target
      (/ (x.keyword "world")
@@ -382,4 +382,4 @@ functions as needed.
          (concat first-word " " second-word)))))
 
 
-(provide 'xp)
+(provide 'jezebel)
