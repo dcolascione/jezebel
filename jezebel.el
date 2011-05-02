@@ -1,36 +1,47 @@
 (require 'cl)
 
-(defstruct (jz-rule
-            (:constructor jz--make-rule)
-            (:conc-name jz-rule--))
-  "A rule in an jz grammar."
-  
+(defstruct (jez-rule
+            (:constructor jez--make-rule)
+            (:conc-name jez-rule--))
+  "A rule in an jez grammar."
+
+  ;; Symbol naming this rule.
   name
-  args
-  definer-function)
 
-(defstruct (jz-compiled-rule
-            (:constructor jz--make-compiled-rule)
-            (:conc-name jz-compiled-rule--))
-  "A compiled rule in a particular parser."
+  ;; Function that expands this rule
+  expander)
 
-  ;; the jz-parser for which we were compiled
+(defstruct (jez-compiled-rule
+            (:constructor jez--make-compiled-rule)
+            (:conc-name jez-compiled-rule--))
+  "A rule compiled for a specific parser with specific arguments."
+
+  ;; the uncompiled version of this rule
+  rule
+
+  ;; the parser for which the above rule was compiled
   parser
 
-  ;; function object that begins matching this rule
-  matcher-function)
-
-(defstruct (jz-grammar
-            (:constructor jz--make-grammar)
-            (:conc-name jz-grammar--))
-  "An jz grammar for some language."
+  ;; sexp that gets pushed onto the success-stack when we're about to
+  ;; match this rule
+  matcher
   
-  ;; hash table mapping rule names (symbols) to jz-rule instances.
-  rules)
+  )
 
-(defstruct (jz-parser
-            (:constructor jz--make-parser)
-            (:conc-name jz-parser--))
+(defstruct (jez-grammar
+            (:constructor jez--make-grammar)
+            (:conc-name jez-grammar--))
+  "An jez grammar for some language."
+  
+  rules
+
+  primitives
+
+  )
+
+(defstruct (jez-parser
+            (:constructor jez--make-parser)
+            (:conc-name jez-parser--))
   
   "A compiled parser that can be used to transform a series of 
 tokens into an AST."
@@ -41,7 +52,7 @@ tokens into an AST."
   ;; The initial state of this parser
   initial-state
 
-  ;; A map of rule ejzansions.
+  ;; A map of rule expansions.
   ;;
   ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N),
   ;; and the hash table is a :test 'equal table.
@@ -51,37 +62,40 @@ tokens into an AST."
   ;;
   states)
 
-(defstruct (jz-state
-            (:constructor jz--make-state)
-            (:conc-name jz--state))
+(defstruct (jez-state
+            (:constructor jez--make-state)
+            (:conc-name jez--state))
   
   "A particular state of a parse operation."
 
   ;; Reference to the parser that created us
   parser
 
-  ;; Stack (lisp list) of backtracking alternatives. Each entry is an
-  ;; jz-choice-point instance.
-  choice-points
+  ;; Stack (lisp list) of states to enter when backtracking
+  or-stack
 
-  ;; Stack (lisp list) of data values to use when we don't backtrack.
-  data)
+  ;; Stack (lisp list) of states to enter when successful
+  success-stack
 
-(defstruct (jz-environment
-            (:constructor jz--make-environment)
-            (:conc-name jz--environment))
+  ;; Stack (lisp list) of data values
+  trail
+  )
+
+(defstruct (jez-environment
+            (:constructor jez--make-environment)
+            (:conc-name jez-environment--))
 
   "A lexical environment used during rule compilation."
 
-  
-  
+  ;; The parser for this environment
+  parser
   )
 
-(defun* jz-make-empty-grammar ()
+(defun* jez-make-empty-grammar ()
   "Create a new empty grammar."
-  (jz--make-grammar :rules (make-hash-table)))
+  (jez--make-grammar :rules (make-hash-table)))
 
-(defmacro* jz-grammar-define-rule (grammar rule-name args &body body)
+(defmacro* jez-grammar-define-rule (grammar rule-name args &body body)
   "Define or redefine a rule in a grammar.
 
 GRAMMAR gives the grammar in which to define the rule, identified
@@ -121,7 +135,7 @@ forms:
 
     This form yields a list of all matched forms.
 
-  (-> RD_1 RD_2 ... RD_N RESULT-FORM)
+  (= RD_1 RD_2 ... RD_N RESULT-FORM)
 
     Filtered sequence: like sequence above, but yield the value
     of RESULT-FORM instead.  The lexical environment of
@@ -158,115 +172,90 @@ forms:
   be replaced by the previous definition of RULE-NAME in GRAMMAR.
 "
 
-  `(jz-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
+  `(jez-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
 
-(defun* jz-grammar--%define-rule (grammar rule-name args &rest FORMS)
-  "Implementation of `jz-grammar-define-rule'.
+(defun* jez-grammar--%define-rule (grammar rule-name args &rest FORMS)
+  "Implementation of `jez-grammar-define-rule'.
 
 All the arguments have the same meaning."
 
-  (assert (symbolp rule-name))
-  (assert (listp args))
-
+  (check-type rule-name symbol)
+  (check-type args list)
   (puthash rule-name
            `(lambda ,args ,@FORMS)
-           (jz-grammar-rules grammar)))
+           (jez-grammar--rules grammar)))
 
-(defun* jz-parser--compile-rule-1 (parser rd &optional environment)
-  "Ejzand a rule RD once and return the ejzanded rule.
+(defun* jez-grammar-define-primitive (grammar name definition)
+  "Define a new primitive NAME for GRAMMAR.
 
-RD is any legal rule definition. Return another rule
-definition (which will always be a list) or an jz-compiled-rule
-instance. On failure, raise an error.
-"
+DEFINITION is a function."
 
-  ;; XXX: use environment
+  (check-type name symbol)
+  (check-type definition function)
+  (puthash name definition (jez-grammar--primitives grammar)))
 
-  (etypecase rd
-    (symbol
-     ;; A bare symbol, rule, is equivalent to (rule).
-     (jz-parser--compile-rule-1 parser (list rd) environment))
+(defun* jez-expand-rule-1 (env rd)
+  "Expand a rule RD once in ENV and return the expanded rule.
 
-    (jz-compiled-rule
-     ;; We're done.
-     rd)
+RD is any legal rule definition. Return a new rule definition or
+nil if we were not able to expand this rule."
 
-    (list
-     ;; Decode the rule
-     (let* ((rule-def (gethash (car rd)
-                               (jz-grammar--rules
-                                (jz-parser--grammar parser)))))
-       
-       (when rule-def
-         (setf rule-def
-               (apply (jz-rule--definer-function rule-def)
-                      (rest rd))))
-
-       rule-def))))
-
-(defun* jz-parser--compile-rule (parser rd
-                                &rest
-                                kw-args
-                                &key
-                                environment
-                                (stop-p #'ignore))
-  
-  "Ejzand the rule definition RD in PARSER.
-
-This function ejzands RD completely, yielding an jz-compiled-rule
-instance. Throws on error.
-
-If ENVIRONMENT is supplied, use it for lexical name lookups. It
-defaults to the top-level lexical environment for PARSER's
-grammar.
-
-STOP-P is a predicate function. It is called with one argument,
-the rule we're about to ejzand. If it returns t, we return that
-rule instead of further ejzanding it.
-
-If ENVIRONMENT is present, use it to ejzand the value of RD.
-"
-  (setf rd (jz-parser--compile-rule-1 parser rd environment))
-
+  ;; A bare symbol RULE is equivalent to (RULE).
   (when (symbolp rd)
-    ;; A bare symbol is equivalent to calling a rule definition with no
-    ;; arguments.
     (setf rd (list rd)))
-  
-  (cond
-   ((jz-compiled-rule-p rd)
-    ;; We're done.
-    rd)
-   
-   ((not (symbolp (car-safe rd)))
-    ;; If we didn't finish compiling the rule, we should have gotten
-    ;; another rule definition back.
-    (error "Invalid generated rule %S" rd))
-   
-   ((funcall stop-p rd)
-    ;; User told us to stop
-    rd)
-   
-   (t
-    ;; Ejzand the rule again
-    (apply #'jz-parser--compile-rule parser rd kw-args))))
 
-(put 'jz-grammar-define-rule 'lisp-indent-function 3)
+  (let* ((parser (jez-environment--parser env))
+         (grammar (jez-parser--grammar parser))
+         (rules (jez-grammar--rules grammar))
+         (rule-name (car-safe rd))
+         (ruledef (gethash rule-name rules)))
 
-(defun* jz--:-rule (env terms accum)
-  "Compile sequences magically."
+    (when ruledef
+      (apply (jez-rule--expander ruledef) (rest rd)))))
 
-  ;; (XXX: We also need to handle annotating the parse tree with
-  ;; attributes as we go, but we can do that later.  For now, let's
-  ;; focus on the match.)
+(defun* jez-expand-rule (env rd)
+  "Expand the rule definition RD in PARSER.
+Return the expanded rule, which is always a list."
+
+  (let ((new-rd (jez-expand-rule-1 env rd)))
+    (if new-rd
+        (jez-expand-rule env rd)
+      rd)))
+
+(defun* jez-compile-rd (env rd)
+  "Return the matcher for the given rule-definition RD.
+Compile the rule if necessary."
+
+  (let* ((expanded-rd (jez-expand-rule env rd))
+         (grammar (jez-parser--grammar parser))
+         (parser (jez-environment--parser env))
+         (states (jez-parser--states parser)))
+
+    ;; If we alreay have a definition for this rule, use that.
+    ;; Otherwise, compile a new instance.
+
+    (or (gethash expanded-rd states)
+        (let ((rule-sym (gensym "jez-compiled-rule-")))
+          (puthash expanded-rd rule-sym states)
+          (setf (symbol-function rule-sym)
+                (apply (first expanded-rd) env (rest rd)))
+          rule-sym))))
+
+(put 'jez-grammar-define-rule 'lisp-indent-function 3)
+
+(defun* jez--*-finish (state))
+
+(defun* jez--: (env terms)
+  "Definition of sequence primitive."
+
   ;;
-  ;; We need to build up a sequence of states we enter when we match a
-  ;; seqeuence so we can point subrules at the "next" state. For
-  ;; example, consider (: a b c), which parses three terms.
+  ;; Build up a sequence of states we enter when we match a seqeuence
+  ;; so we can point subrules at the "next" state.  Consider (: a b
+  ;; c), which parses three terms.
   ;; 
   ;; We have four states:
   ;;
-  ;;  1. before a
+  ;;  1. start
   ;;  2. after a, before b
   ;;  3. after b, before c
   ;;  4. after c
@@ -276,110 +265,92 @@ If ENVIRONMENT is present, use it to ejzand the value of RD.
   ;; we can pick up where we left off if T succeeds or let T backtrack
   ;; if appropriate.
   ;; 
-  ;; We model each state as a compiled function and build these states
-  ;; recursively.  We keep track of the number of terms we have so
-  ;; far.
-  ;;
-  (check-type terms list)
-  (check-type accum integer)
 
-  (let (next-state)
+  (let ((compiled-terms
+         (reverse
+          (mapcar
+           (lambda (term)
+             (jez-compile-rd env term))
+           terms))))
     
-    (cond ((null terms)
-           ;; We're the last term. accum contains the number of items
-           ;; we've successfully parsed so far, which XXX will be the
-           ;; number of items on the data stack?
-           )
+    (lambda (state)
+      (jez--*-finish state ,(length terms))
+      ,@(mapcar (lambda (compiled-term)
+                  `(jez-push-success state ,compiled-term))))))
 
-          (t
-           ;; We have items left to parse
-           (setf next-state (jz--:-rule env (rest terms) (1+ accum)))
-           
-           )
-        
-          ))
 
-  )
+(defun* jez--* (env term)
+  "Definition of repetition primitive."
 
-(defun* jz--*-rule (env term)
-  "Magic for repetition."
+  ;; if we're backtracking, one choice point for each
+  ;; repetition. otherwise, similar to : above.
   
   )
 
-(defun* jz--/-rule (env terms)
-  "Magic for prioritized choice."
+(defun* jez--/ (env terms)
+  "Definition of prioritized choice primitive."
 
-  
+  ;; choice point for each item
   
   )
 
-(defconst jz-root-grammar
+(defconst jez-root-grammar
+  (let ((root (jez--make-grammar
+               :rules (make-hash-table :test #'eq)
+               :primitives (make-hash-table :test #'eq))))
 
-  (let ((root (jz--make-grammar
-               :rules (make-hash-table :test 'equal))))
-
-    ;; Create magic
+    ;; Initial semi-magical rules.
     
-    (jz-grammar-define-rule root : (&environment env &rest terms)
-      (jz--:-rule env env terms 0))
-    
-    (jz-grammar-define-rule root * (&environment env term)
-      (jz--*-rule env env term))
-    
-    (jz-grammar-define-rule root / (&environment env &rest terms)
-      (jz--/-rule env env terms))
-    
+    (jez-grammar-define-primitive root ': #'jez--:)
+    (jez-grammar-define-primitive root '* #'jez--*)
+    (jez-grammar-define-primitive root '/ #'jez--/)
     root)
-  
-
   "The grammar inherited by all other grammars.")
 
 
-(defun* jz-grammar-include (grammar other-grammar)
+(defun* jez-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
   
   )
 
-(defun* jz-parser--precompile-rule (parser))
-
-(defun* jz-grammar-create-parser (grammar top-rd)
-  "Compiles grammar GRAMMAR into a jz-parser."
+(defun* jez-grammar-create-parser (grammar top-rd)
+  "Compiles grammar GRAMMAR into a jez-parser."
 
   ;; First, create a basic parser.
   
-  (let* ((parser (jz--make-parser
+  (let* ((parser (jez--make-parser
                   :grammar grammar
                   :states (make-hash-table :test 'equal))))
 
     ;; Then, eagerly initialize the rule tree.
-    (setf (jz-parser--initial-state parser)
-          (jz-parser--compile-rule top-rd))
+    (setf (jez-parser--initial-state parser)
+          (jez-parser--expand-rule top-rd))
     
     ;; Parser is now ready to use to begin parsing
     parser))
 
-(defun* jz-state++ (state)
+(defun* jez-state++ (state)
   "Perform one step of a parse.
 
 Update STATE by side effect, calling preconfigured callback
 functions as needed.
 "
-  (funcall (pop (jz-state-control-stack state))
+  (funcall (pop (jez-state-control-stack state))
            state))
 
-(jz-make-grammar 
-  `((:import jz-base-grammar :as x)
+;; '(jez-make-grammar 
+;;   `((:import jez-base-grammar :as x)
 
-    (hello-target
-     (/ (x.keyword "world")
-        (x.keyword "blarg")))
+;;     (hello-target
+;;      (/ (x.keyword "world")
+;;         (x.keyword "blarg")))
   
-    (top 
-     (-> (<- first-word (x.keyword "hello"))
-         (syntactic-ws)
-         (<- second-word hello-target)
+;;     (top 
+;;      (<- first-word (x.keyword "hello"))
+;;      (syntactic-ws)
+;;      (<- second-word hello-target)
          
-         (concat first-word " " second-word)))))
+;;      )))
 
 
 (provide 'jezebel)
