@@ -9,7 +9,8 @@
   name
 
   ;; Function that expands this rule
-  expander)
+  expander
+  )
 
 (defstruct (jez-compiled-rule
             (:constructor jez--make-compiled-rule)
@@ -231,7 +232,7 @@ Compile the rule if necessary."
          (parser (jez-environment--parser env))
          (states (jez-parser--states parser)))
 
-    ;; If we alreay have a definition for this rule, use that.
+    ;; If we already have a definition for this rule, use that.
     ;; Otherwise, compile a new instance.
 
     (or (gethash expanded-rd states)
@@ -245,26 +246,31 @@ Compile the rule if necessary."
 
 (defun* jez--*-finish (state))
 
-(defun* jez--: (env terms)
+(defun* jez--:-compile (env terms)
   "Definition of sequence primitive."
 
   ;;
-  ;; Build up a sequence of states we enter when we match a seqeuence
-  ;; so we can point subrules at the "next" state.  Consider (: a b
-  ;; c), which parses three terms.
-  ;; 
-  ;; We have four states:
+  ;; Consider (: A_0 A_1 ... A_N ). We have N + 1 states, denoted by
+  ;; an integer i ranging over [0, N].  Either:
   ;;
-  ;;  1. start
-  ;;  2. after a, before b
-  ;;  3. after b, before c
-  ;;  4. after c
+  ;;   - we're about to parse A_i, 0 <= i < N
+  ;;   - we've finished parsing, i = N
   ;;
-  ;; When we're in state N and need to match term T next, we need to
-  ;; pass into T enough information to enter state N+1 --- that way,
-  ;; we can pick up where we left off if T succeeds or let T backtrack
-  ;; if appropriate.
-  ;; 
+  ;; When we're in state i and need to match A_i next, we need to pass
+  ;; into the code for matching A_i enough information for it to then
+  ;; try parsing A_(i+1), possibly many times if backtracking is
+  ;; allowed.
+  ;;
+
+  ;; This function generates a function that can be pushed onto one of
+  ;; our state stacks as the i=0 state.  The generated function
+  ;; references other states functions that we compile for this
+  ;; sequence.
+
+  (let ((term (first terms))
+        (terms (rest terms)))
+    
+    )
 
   (let ((compiled-terms
          (reverse
@@ -283,7 +289,7 @@ Compile the rule if necessary."
   "Definition of repetition primitive."
 
   ;; if we're backtracking, one choice point for each
-  ;; repetition. otherwise, similar to : above.
+  ;; repetition. otherwise, similar to `:' above.
   
   )
 
