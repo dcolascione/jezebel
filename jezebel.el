@@ -53,6 +53,12 @@ tokens into an AST."
   ;; The initial state of this parser
   initial-state
 
+  ;; Maps action forms (jez--do-* args...) to compiled functions.
+  ;;
+  ;; The value is an EQUAL hash
+  ;;
+  state-funcs
+
   ;; A map of rule expansions.
   ;;
   ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N),
@@ -63,20 +69,29 @@ tokens into an AST."
   ;;
   states)
 
+(defun jez-parser--make-state-func (p &rest sf)
+  "Return a callable lisp function for the given primitive form."
+
+  (or
+   (gethash sf (jez-parser--state-funcs p))
+   (puthash sf (byte-compile
+                `(lambda (s)
+                   ,@sf)))))
+
 (defstruct (jez-state
             (:constructor jez--make-state)
-            (:conc-name jez--state))
+            (:conc-name jez-state--))
   
   "A particular state of a parse operation."
 
-  ;; Reference to the parser that created us
+  ;; Reference to the parser that created us (which is immutable)
   parser
 
   ;; Stack (lisp list) of states to enter when backtracking
   or-stack
 
   ;; Stack (lisp list) of states to enter when successful
-  success-stack
+  and-stack
 
   ;; Stack (lisp list) of data values
   trail
@@ -90,6 +105,24 @@ tokens into an AST."
 
   ;; The parser for this environment
   parser
+  )
+
+;;
+;; Purely functional AST built incrementally by parsing.
+;;
+(defstruct (jez-tree
+            (:constructor jez--make-tree)
+            (:conv-name jez-tree--))
+  "AST node"
+
+  ;; This node's parent node
+  parent
+  
+  ;; Properties of the current node
+  properties
+
+  ;; children of this node
+  children
   )
 
 (defun* jez-make-empty-grammar ()
@@ -244,10 +277,18 @@ Compile the rule if necessary."
 
 (put 'jez-grammar-define-rule 'lisp-indent-function 3)
 
-(defun* jez--*-finish (state))
+(defun* jez--do-: (s child-state next-state)
+  ;; XXX: implement me properly. The lines below are junk.
+  (push child-state (jez-state--and-stack s))
+  (push next-state (jez-state--and-stack s)))
 
-(defun* jez--:-compile (env terms)
-  "Definition of sequence primitive."
+(defun* jez--compile-: (env terms)
+  "Compile sequence primitive."
+
+  ;; This function generates a function that can be pushed onto one of
+  ;; our state stacks as the i=0 state.  The generated function
+  ;; references other states functions that we compile for this
+  ;; sequence.
 
   ;;
   ;; Consider (: A_0 A_1 ... A_N ). We have N + 1 states, denoted by
@@ -257,48 +298,111 @@ Compile the rule if necessary."
   ;;   - we've finished parsing, i = N
   ;;
   ;; When we're in state i and need to match A_i next, we need to pass
-  ;; into the code for matching A_i enough information for it to then
-  ;; try parsing A_(i+1), possibly many times if backtracking is
-  ;; allowed.
+  ;; into the code for matching A_i enough information for that code
+  ;; to then try parsing A_(i+1), possibly many times if backtracking
+  ;; is allowed.
   ;;
-
-  ;; This function generates a function that can be pushed onto one of
-  ;; our state stacks as the i=0 state.  The generated function
-  ;; references other states functions that we compile for this
-  ;; sequence.
-
-  (let ((term (first terms))
-        (terms (rest terms)))
+  ;; We communicate this information by pushing an item onto
+  ;; success-stack.
+  ;;
+  ;; We also allow users to bind values of sub-rules to names using
+  ;; the <- operator. These names need to be available during matching
+  ;; of sub-rules in order to support predicates --- i.e., each bound
+  ;; sub-rule's value needs to be available just after it's matched,
+  ;; and not just at the end of the overall rule.
+  ;;
+  
+  (let ((parser (jez-environment--parser env))
+        binding rbindings rterms state-func)
     
-    )
+    ;; Loop forward through all terms, accumulating information about
+    ;; which ones bind variables. We don't compile the terms right
+    ;; away because each one needs to know its successor.
+    (dolist (term terms)
+      (setf binding nil)
+      
+      (when (eq (car-safe term) '<-)
+        (pop term)
+        (setf binding (pop term)))
 
-  (let ((compiled-terms
-         (reverse
-          (mapcar
-           (lambda (term)
-             (jez-compile-rd env term))
-           terms))))
+      (push term rterms)
+      (push binding rbindings))
+
+    ;; Compile the terms in reverse order so that each one references
+    ;; the next.
+
+    (while rterms
+      (setf binding (pop rbindings))
+      (setf state-func
+            (jez-parser--make-state-func
+             parser
+             `(jez-do-: s                        ; anaphoric `s'
+                        ,(jez-compile-rd env (pop rterms))
+                        ,state-func))))
     
-    (lambda (state)
-      (jez--*-finish state ,(length terms))
-      ,@(mapcar (lambda (compiled-term)
-                  `(jez-push-success state ,compiled-term))))))
+    ;; The term we compiled last is the one that is logically
+    ;; first. Return it to our caller as the "compiled" rule.
+    state-func))
 
-
-(defun* jez--* (env term)
-  "Definition of repetition primitive."
-
-  ;; if we're backtracking, one choice point for each
-  ;; repetition. otherwise, similar to `:' above.
+(defun* jez--do-* (s child-state)
+  ;; XXX: non-backtracking alternative.
   
   )
 
-(defun* jez--/ (env terms)
-  "Definition of prioritized choice primitive."
+(defun* jez--do-*-first (s child-state)
+  ;; push item onto data stack.
 
-  ;; choice point for each item
   
+    
   )
+
+(defun* jez--do-*-last (s)
+  ;; clean up list on data stack and build AST node for it.
+  )
+
+(defun* jez--compile-* (env backtrack term)
+  "Compile repetition primitive."
+  
+  ;; Match TERM as many times as we can, backtracking after each one.
+
+  (let* ((parser (jez-environment--parser env))
+         (last (jez-parser--make-state-func
+                parser `(jez--do-*-last s)))
+         (nth (jez-parser--make-state-func
+                parser `(jez--do-*-nth s ,last)))
+         (first (jez-parser--make-state-func
+                 (jez-parser--make-state-func
+                parser `(jez--do-*-first s ,nth ,last)))))))
+
+(defun* jez--do-/ (s child-state next-alternative-state)
+  ;; XXX: non-backtracking alternative. Even possible?
+  
+  (when next-alternative-state
+    (push next-alternative-state (jez--state--or-stack s)))
+  (push child-state (jez--state--and-stack s)))
+
+(defun* jez--compile-/ (env terms)
+  "Compile prioritized choice primitive."
+
+  ;; Just as for sequence, compile terms in reverse order so each can
+  ;; refer to the next.  The difference is that we put terms on the
+  ;; backtracking stack so that we only try to match the N+1th term if
+  ;; the Nth term fails.
+
+  (let ((parser (jez-environment--parser env))
+        state-func)
+    
+    (dolist (term (reverse terms))
+      (setf state-func
+            (jez-parser--make-state-func
+             parser
+             `(jez--do-/
+               s                        ; anaphoric `s'
+               ,(jez-compile-rd env term)
+               state-func))))
+
+    ;; The state compiled last is logically first. Return it.
+    state-func))
 
 (defconst jez-root-grammar
   (let ((root (jez--make-grammar
@@ -307,25 +411,26 @@ Compile the rule if necessary."
 
     ;; Initial semi-magical rules.
     
-    (jez-grammar-define-primitive root ': #'jez--:)
-    (jez-grammar-define-primitive root '* #'jez--*)
-    (jez-grammar-define-primitive root '/ #'jez--/)
+    (jez-grammar-define-primitive root ': #'jez--compile-:)
+    (jez-grammar-define-primitive root '* #'jez--compile-*)
+    (jez-grammar-define-primitive root '/ #'jez--compile-/)
     root)
   "The grammar inherited by all other grammars.")
 
 
 (defun* jez-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
-  
+  (assert nil nil "IMPLEMENT ME XXX")
   )
 
-(defun* jez-grammar-create-parser (grammar top-rd)
+(defun* jez-create-parser (grammar top-rd)
   "Compiles grammar GRAMMAR into a jez-parser."
 
   ;; First, create a basic parser.
   
   (let* ((parser (jez--make-parser
                   :grammar grammar
+                  :state-funcs (make-hash-table :test 'equal)
                   :states (make-hash-table :test 'equal))))
 
     ;; Then, eagerly initialize the rule tree.
