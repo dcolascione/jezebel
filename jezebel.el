@@ -110,20 +110,138 @@ tokens into an AST."
 ;;
 ;; Purely functional AST built incrementally by parsing.
 ;;
+
+(defstruct (jez-tree-node
+            (:constructor jez--make-tree-node)
+            (:copier nil)
+            (:conc-name jez-tree-node--))
+  "Node of an N-ary purely-functional zippered tree."
+
+  ;; Each node has a notion of "current child". The current child is
+  ;; the first entry in left-children.
+  
+  ;; Children of this node up to and including the current
+  ;; child. Stored in reverse order.
+  left-children
+
+  ;; Children of this node after the current child. Stored in forward
+  ;; order.
+  right-children)
+
 (defstruct (jez-tree
             (:constructor jez--make-tree)
-            (:conv-name jez-tree--))
-  "AST node"
+            (:copier nil)
+            (:conc-name jez-tree--))
+  "View into a jez-tree."
 
-  ;; This node's parent node
-  parent
+  current-node
+  ancestors)
+
+(defun* jez-tree--replace-ancestors (replacement remainder-path)
+  "Copy nodes along the given path, replacing the current node
+with a copy so that the old tree structure persists."
+
+  ;; Build a new node, substituting REPLACEMENT for the current child
+  ;; of CUR-NODE, then process the next item in REMAINDER-PATH
+  ;; replacing _its_ current child with the node we just created.
+
+  (when remainder-path
+    (let* ((cur (first remainder-path))
+           (new (jez--make-tree-node
+                 :left-children
+                 (list* replacement
+                        (rest (jez-tree-node--left-children cur)))
+                 :right-children
+                 (jez-tree-node--right-children cur))))
+
+      (list* new
+             (jez-tree--replace-ancestors new (rest remainder-path))))))
+
+(defun* jez-make-empty-tree ()
+  "Create a brand-new empty tree."
+  (jez--make-tree
+   :current-node (jez--make-tree-node)))
+
+(defun* jez-tree-add-child (tree)
+  "Add a child node to TREE's current node.  Return a new tree
+with the current node being the just-added node.  Requires time
+proportional to the current height of the tree."
+
+  (let* ((cur (jez-tree--current-node tree))
+         (new (jez--make-tree-node))
+         (new-parent (jez--make-tree-node
+                      :left-children
+                      (list* new
+                             (jez-tree-node--left-children cur))
+                      :right-children
+                      (jez-tree-node--right-children cur))))
+
+    ;; Build a new cursor that refers to a persistently new tree that
+    ;; shares structure with the old.
+
+    (jez--make-tree
+     :current-node new
+     :ancestors (list* 
+                 new-parent
+                 (jez-tree--replace-ancestors
+                  new-parent
+                  (jez-tree--ancestors tree))))))
+
+(defun* jez-tree-child-left (tree)
+  "Set current node's current child to previous child.  Return a
+new cursor.  Raise error if there is no previous child.  Time
+required is proportional to the depth of the tree."
+  (let* ((cur (jez-tree--current-node tree))
+         (l (or (jez-tree-node--left-children cur)
+                (error "already at leftmost child")))
+         (r (jez-tree-node--right-children cur))
+         (new (jez--make-tree-node
+               :left-children
+               (rest l)
+               :right-children
+               (list* (first l) r))))
+
+    (jez--make-tree
+     :current-node new
+     :ancestors (jez-tree--replace-ancestors
+                   new
+                   (jez-tree--ancestors tree)))))
+
+(defun* jez-tree-child-right (tree)
+  "Set current node's current child to next child.  Return a new
+cursor.  Raise error if there is no next child.  Time required is
+proportional to the depth of the tree."
+  (let* ((cur (jez-tree--current-node tree))
+         (l (jez-tree-node--left-children cur))
+         (r (or (jez-tree-node--right-children cur)
+                (error "already at rightmost child")))
+         (new (jez--make-tree-node
+               :left-children
+               (list* (first r) l)
+               :right-children
+               (rest r))))
+
+    (jez--make-tree
+     :current-node new
+     :ancestors (jez-tree--replace-ancestors
+                 new
+                 (jez-tree--ancestors tree)))))
+
+(defun* jez-tree-up (tree)
+  "Move cursor to parent of current node.  Return a new cursor.
+Raise error if the current node is the top node.  Constant time."
   
-  ;; Properties of the current node
-  properties
-
-  ;; children of this node
-  children
   )
+
+(defun* jez-tree-down (tree)
+  "Move cursor to current child.  Return a new cursor.  Raise
+error if the current node has no children.  Constant time."
+
+  
+  
+  )
+
+
 
 (defun* jez-make-empty-grammar ()
   "Create a new empty grammar."
@@ -372,7 +490,11 @@ Compile the rule if necessary."
                 parser `(jez--do-*-nth s ,last)))
          (first (jez-parser--make-state-func
                  (jez-parser--make-state-func
-                parser `(jez--do-*-first s ,nth ,last)))))))
+                parser `(jez--do-*-first s ,nth ,last))))
+
+         
+
+         )))
 
 (defun* jez--do-/ (s child-state next-alternative-state)
   ;; XXX: non-backtracking alternative. Even possible?
