@@ -87,14 +87,21 @@ tokens into an AST."
   ;; Reference to the parser that created us (which is immutable)
   parser
 
+  ;; The parse tree we've constructed so far, a jez-tree instance
+  ast
+
+  ;; Reach (buffer position)
+  reach
+
+  ;; Current position
+  point
+
   ;; Stack (lisp list) of states to enter when backtracking
   or-stack
 
   ;; Stack (lisp list) of states to enter when successful
   and-stack
 
-  ;; Stack (lisp list) of data values
-  trail
   )
 
 (defstruct (jez-environment
@@ -117,16 +124,13 @@ tokens into an AST."
             (:conc-name jez-tree-node--))
   "Node of an N-ary purely-functional zippered tree."
 
-  ;; Each node has a notion of "current child". The current child is
-  ;; the first entry in left-children.
-  
-  ;; Children of this node up to and including the current
-  ;; child. Stored in reverse order.
-  left-children
+  ;; List of children of this node; updated lazily. jez-tree-node's
+  ;; zippered list for this node is authoritative when it exists.
+  children
 
-  ;; Children of this node after the current child. Stored in forward
-  ;; order.
-  right-children)
+  ;; plist of properties of this node
+  properties
+  )
 
 (defstruct (jez-tree
             (:constructor jez--make-tree)
@@ -134,114 +138,220 @@ tokens into an AST."
             (:conc-name jez-tree--))
   "View into a jez-tree."
 
-  current-node
-  ancestors)
+  ;; Current jez-tree-node
+  current
 
-(defun* jez-tree--replace-ancestors (replacement remainder-path)
-  "Copy nodes along the given path, replacing the current node
-with a copy so that the old tree structure persists."
+  ;; Is the current node dirty?
+  dirty
 
-  ;; Build a new node, substituting REPLACEMENT for the current child
-  ;; of CUR-NODE, then process the next item in REMAINDER-PATH
-  ;; replacing _its_ current child with the node we just created.
+  ;; Children of parent to the left of current; stored in reverse
+  ;; order
+  left
 
-  (when remainder-path
-    (let* ((cur (first remainder-path))
-           (new (jez--make-tree-node
-                 :left-children
-                 (list* replacement
-                        (rest (jez-tree-node--left-children cur)))
-                 :right-children
-                 (jez-tree-node--right-children cur))))
-
-      (list* new
-             (jez-tree--replace-ancestors new (rest remainder-path))))))
+  ;; Children of parent to the right of current; stored in forward
+  ;; order
+  right
+  
+  ;; Parent jez-tree (not jez-tree-node!) or nil if we're at top
+  parent
+  )
 
 (defun* jez-make-empty-tree ()
   "Create a brand-new empty tree."
   (jez--make-tree
-   :current-node (jez--make-tree-node)))
+   :current (jez--make-tree-node)))
 
-(defun* jez-tree-add-child (tree)
-  "Add a child node to TREE's current node.  Return a new tree
-with the current node being the just-added node.  Requires time
-proportional to the current height of the tree."
+(defun* jez-tree-prepend-child (tree)
+  "Add a child to the beginning of TREE's child list.  Return a
+new cursor pointing at the new child.  Constant time."
+  (jez--make-tree
+   :current (jez--make-tree-node)
+   :dirty t
+   :left nil
+   :right (jez-tree-node--children (jez-tree--current tree))
+   :parent tree))
 
-  (let* ((cur (jez-tree--current-node tree))
-         (new (jez--make-tree-node))
-         (new-parent (jez--make-tree-node
-                      :left-children
-                      (list* new
-                             (jez-tree-node--left-children cur))
-                      :right-children
-                      (jez-tree-node--right-children cur))))
-
-    ;; Build a new cursor that refers to a persistently new tree that
-    ;; shares structure with the old.
-
-    (jez--make-tree
-     :current-node new
-     :ancestors (list* 
-                 new-parent
-                 (jez-tree--replace-ancestors
-                  new-parent
-                  (jez-tree--ancestors tree))))))
-
-(defun* jez-tree-child-left (tree)
-  "Set current node's current child to previous child.  Return a
-new cursor.  Raise error if there is no previous child.  Time
-required is proportional to the depth of the tree."
-  (let* ((cur (jez-tree--current-node tree))
-         (l (or (jez-tree-node--left-children cur)
-                (error "already at leftmost child")))
-         (r (jez-tree-node--right-children cur))
-         (new (jez--make-tree-node
-               :left-children
-               (rest l)
-               :right-children
-               (list* (first l) r))))
-
-    (jez--make-tree
-     :current-node new
-     :ancestors (jez-tree--replace-ancestors
-                   new
-                   (jez-tree--ancestors tree)))))
-
-(defun* jez-tree-child-right (tree)
-  "Set current node's current child to next child.  Return a new
-cursor.  Raise error if there is no next child.  Time required is
-proportional to the depth of the tree."
-  (let* ((cur (jez-tree--current-node tree))
-         (l (jez-tree-node--left-children cur))
-         (r (or (jez-tree-node--right-children cur)
-                (error "already at rightmost child")))
-         (new (jez--make-tree-node
-               :left-children
-               (list* (first r) l)
-               :right-children
-               (rest r))))
-
-    (jez--make-tree
-     :current-node new
-     :ancestors (jez-tree--replace-ancestors
-                 new
-                 (jez-tree--ancestors tree)))))
+(defun* jez-tree-append-child (tree)
+  "Add a child to the end of TREE's child list.  Return a new
+cursor pointing at the new child.  Takes time proportional to the
+number of children in TREE's current node."
+  (jez--make-tree
+   :current (jez--make-tree-node)
+   :dirty t
+   :left (reverse
+          (jez-tree-node--children (jez-tree--current tree)))
+   :right nil
+   :parent tree))
 
 (defun* jez-tree-up (tree)
-  "Move cursor to parent of current node.  Return a new cursor.
-Raise error if the current node is the top node.  Constant time."
-  
-  )
+  "Move cursor to parent of current node.  Return a new cursor
+pointing at the parent.  Raise error if already at top of tree.
+Constant time if tree has not been modified; otherwise, takes
+time proportional to the number of children in the parent."
 
-(defun* jez-tree-down (tree)
-  "Move cursor to current child.  Return a new cursor.  Raise
-error if the current node has no children.  Constant time."
+  ;; If the current node isn't dirty, all we have to do is return the
+  ;; cursor we saved when we went down into the current node.
 
-  
-  
-  )
+  ;; Otherwise, life becomes trickier. We return a new cursor that
+  ;; points at a new tree node. This new node is just like our parent,
+  ;; except that its child list is reconstructed from TREE's zippered
+  ;; child list, which takes into account any modifications we made.
 
+  (let ((old-parent (jez-tree--parent tree)))
+    (unless old-parent
+      (error "already at top of tree"))
+    (if (jez-tree--dirty tree)
+        (jez--make-tree
+         ;; Make new child to stand in for (jez-tree--current
+         ;; old-parent).  The new child incorporates any changes we've
+         ;; made since we branched from parent.
+         :current (jez--make-tree-node
+                   :children (append (reverse (jez-tree--left tree))
+                                     (list (jez-tree--current tree))
+                                     (jez-tree--right tree))
+                   :properties (jez-tree-node--properties
+                                (jez-tree--current old-parent)))
 
+         ;; The new cursor is dirty because we need to propagate changes
+         ;; all the way up to the top of the tree.
+         :dirty t
+
+         ;; We can use the original parent's left and right entries
+         ;; unchanged.
+         :left (jez-tree--left old-parent)
+         :right (jez-tree--right old-parent)
+         :parent (jez-tree--parent old-parent))
+
+      ;; Not dirty. Return original parent cursor unchanged.
+      old-parent)))
+
+(defun* jez-tree-first-p (tree)
+  "Return non-nil if current node of TREE has a previous sibling.
+Constant time."
+  (jez-tree--left tree))
+
+(defun* jez-tree-last-p (tree)
+  "Return non-nil if current node of TREE has a next sibling.
+Constant time."
+  (jez-tree--right tree))
+
+(defun* jez-tree-children-p (tree)
+  "Return non-nil if current node of TREE has children.  Constant
+time."
+  (jez-tree-node--children
+   (jez-tree--current tree)))
+
+(defun* jez-tree-root-p (tree)
+  "Return non-nil if current node of TREE is the root.  Constant
+time."
+  (not (jez-tree--parent tree)))
+
+(defun* jez-tree-prev-sibling (tree)
+  "Return a new cursor pointing to the previous sibling of the
+current node.  Raise error if there is no previous sibling.
+Constant time."
+  (let* ((old-left (jez-tree--left tree)))
+    (jez--make-tree
+     :current (or (first old-left)
+                  (error "already at leftmode child"))
+     :dirty (jez-tree--dirty tree)
+     :left (rest old-left)
+     :right (list* (jez-tree--current tree)
+                   (jez-tree--right tree))
+     :parent (jez-tree--parent tree))))
+
+(defun* jez-tree-next-sibling (tree)
+  (let* ((old-right (jez-tree--right tree)))
+    (jez--make-tree
+     :current (or (first old-right)
+                  (error "already at rightmode child"))
+     :dirty (jez-tree--dirty tree)
+     :left (list* (jez-tree--current tree)
+                  (jez-tree--left tree))
+     :right (rest old-right)
+     :parent (jez-tree--parent tree))))
+
+(defun* jez-tree-first-child (tree)
+  "Return a cursor pointing to the first child of the current
+node.  Raise error if the current node has no children.  Constant
+time."
+  (let ((children (jez-tree-node--children
+                   (jez-tree--current tree))))
+    (jez--make-tree
+     :current (or (first children)
+                  (error "current node has no children"))
+     :dirty nil
+     :left nil
+     :right (rest children)
+     :parent tree)))
+
+(defun* jez-tree-last-child (tree)
+  "Return a cursor pointing to the last child of the current
+node.  Raise error if the current node has no children.  Time
+proportional to number of children in current node."
+  (let ((rchildren (reverse (jez-tree-node--children
+                             (jez-tree--current tree)))))
+
+    (jez--make-tree
+     :current (or (first rchildren)
+                  (error "current node has no children"))
+     :dirty nil
+     :left (rest rchildren)
+     :right nil
+     :parent tree)))
+
+(defun* jez-tree-insert-sibling-before (tree)
+  "Insert a sibling before current node.  Return a cursor
+pointing to the new node.  Raise error if current node is the
+root node.  Constant time."
+
+  (jez--make-tree
+   :current (jez--make-tree-node)
+   :dirty t
+   :left (jez-tree--left tree)
+   :right (list* (jez-tree--current tree)
+                 (jez-tree--right tree))
+   :parent (or (jez-tree--parent tree)
+               (error "root node cannot have siblings"))))
+
+(defun* jez-tree-insert-sibling-after (tree)
+  "Insert a sibling after current node.  Return a cursor pointing
+to new node.  Raise error if current node is the root node.
+Constant time."
+
+  (jez--make-tree
+   :current (jez--make-tree-node)
+   :dirty t
+   :left (list* (jez-tree--current tree)
+                (jez-tree--left tree))
+   :right (jez-tree--right tree)
+   :parent (or (jez-tree--parent tree)
+               (error "root node cannot have siblings"))))
+
+(defun* jez-tree-get (tree prop)
+  "Return the value of PROP in the current node of TREE.  Time
+proportional to number of existing properties."
+
+  (plist-get
+   (jez-tree-node--properties (jez-tree--current tree))
+   prop))
+
+(defun* jez-tree-put (tree prop val)
+  "Set PROP to VAL in the current node of TREE.  Return a new
+cursor pointing to the modified node.  Time proportional to
+number of existing properties."
+
+  (let ((old-current (jez-tree--current tree)))
+    (jez--make-tree
+     :current (jez--make-tree-node
+               :children (jez-tree-node--children old-current)
+               :properties (plist-put (copy-sequence
+                                       (jez-tree-node--properties old-current))
+                                      prop val))
+     :dirty t
+     :left (jez-tree--left tree)
+     :right (jez-tree--right tree)
+     :parent (jez-tree--parent tree))))
 
 (defun* jez-make-empty-grammar ()
   "Create a new empty grammar."
