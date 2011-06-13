@@ -1,8 +1,185 @@
 (require 'cl)
 
-(defstruct (jez-rule
-            (:constructor jez--make-rule)
-            (:conc-name jez-rule--))
+(defmacro jez-define-functional-struct (name &rest orig-slots)
+  "`defstruct' specialized for pure functional data structures.
+A structure is defined just as `defstruct' would, except that an
+additional copy-and-modify function is defined.  
+
+This copy-and-modify function permits copying and modifying an
+instance of the structure in one step.  If the structure is
+defined to be a list, then unmodified parts of the structure may
+be shared.  List structures benefit from having their fields
+arranged from most to least frequently modified.
+
+This function supports a new :copymod struct option.  If present,
+its argument will be used as the name of copy-and-modify macro to
+generate.  The name defaults to copy-and-modify-NAME.
+
+"
+  (let (name-symbol
+        filtered-options
+        (copymod-name 'jez--unknown)
+        struct-type
+        named
+        slots)
+    
+    ;; Normalize name and extract the struct name symbol
+    (when (symbolp name)
+      (setf name (list name)))
+    (setf name-symbol (first name))
+
+    ;; Parse struct options and filter out anything we know
+    ;; `defstruct' proper does not understand.
+    (dolist (option (rest name))
+      (let (filter-out)
+        (when (symbolp option)
+          (setf option (list option)))
+        (case (car-safe option)
+          (:named
+           (setf named t))
+          (:type
+           (setf struct-type (second option)))
+          (:copymod
+           (setf copymod-name (second option))
+           (setf filter-out t)))
+        (unless filter-out
+          (push option filtered-options))))
+    (setf name (list* name-symbol filtered-options))
+
+    ;; Compute defaults
+
+    (when (eq copymod-name 'jez--unknown)
+      (setf copymod-name
+            (intern (format "copy-and-modify-%s" name-symbol))))
+
+    (when (and (null named) (null struct-type))
+      (setf named (intern (format "cl-struct-%s" name-symbol))))
+    
+    (setf struct-type
+          (ecase struct-type
+            ((vector nil) 'vector)
+            (list 'list)))
+    
+    ;; Parse slots, first adding a dummy slot for the name if
+    ;; necessary.
+    
+    (when named
+      (push 'jez--name-slot slots))
+    
+    (dolist (slot orig-slots)
+      (when (not (stringp slot))
+        (push (intern
+               (format ":%s" (if (symbolp slot) slot (car slot))))
+              slots)))
+    
+    (setf slots (reverse slots))
+    
+    `(progn
+       (defstruct ,name ,@orig-slots)
+       ,(when copymod-name
+          `(defmacro ,copymod-name (inst &rest modifiers &environment env)
+             (,(if (eq struct-type 'list)
+                   'jez--copymod-list
+                 'jez--copymod-vector)
+              inst
+              modifiers
+              ',slots
+              ',named
+              env))))))
+
+(defun* jez--copymod-check-modifiers (modifiers slots)
+  "Signal error if MODIFIERS not valid for SLOTS.  Used in
+implementation of jez--copymod-*."
+  (loop for modifier-key = (pop modifiers)
+        for modifier-form = (pop modifiers)
+        until (null modifier-key)
+        unless (and (keywordp modifier-key)
+                    (memq modifier-key slots))
+        do (error "invalid modifier: %s" modifier-key)))
+
+(defun* jez--copymod-vector (inst modifiers slots named env)
+  "Implement copymod macro for vector structures."
+  ;; TODO: benchmark and tune. Might we want to just build a vector if
+  ;; we have a large enough number of modifiers?
+  (jez--copymod-check-modifiers modifiers slots)
+  (let ((tmp-sym (gensym "jez--copymod-tmp")))
+    (cond (modifiers
+           `(lexical-let ((,tmp-sym (copy-sequence ,inst)))
+              ,@(loop for idx upfrom 0
+                      for slot in slots
+                      for form = (plist-member modifiers slot)
+                      when form collect
+                      `(aset ,tmp-sym
+                             ,idx
+                             ;; anaphoric `orig'
+                             (symbol-macrolet
+                                 ((orig (aref ,tmp-sym ,idx)))
+                               ,(second form))))
+              ,tmp-sym))
+          (t
+           inst))))
+
+(defvar jez--need-orig)
+(defmacro jez--need-orig-hack (sym)
+  (setf jez--need-orig t)
+  sym)
+
+(defun* jez--copymod-list (inst modifiers slots named env)
+  "Implement copymod macro for list structures."
+  ;; TODO: benchmark and tune performance.
+  (jez--copymod-check-modifiers modifiers slots)
+  (if (null modifiers)
+      inst
+    (let* ((tmp-sym (gensym "jez--copymod-tmp"))
+           (orig-sym (gensym "jez--copymod-orig"))
+           (nr-modifiers (/ (length modifiers) 2))
+           jez--need-orig
+           need-orig-sym
+           (body
+            (loop
+             for slot = (car slots)
+             for form = (plist-member modifiers slot)
+             while (> nr-modifiers 0)
+             do (pop slots)
+             when form do (decf nr-modifiers)
+             collect
+             (if form
+                 ;; we have a form
+                 (let* ((jez--need-orig)
+                        (inner (cl-macroexpand-all
+                                `(symbol-macrolet
+                                     ((orig (jez--need-orig-hack
+                                             ,orig-sym)))
+                                   ,(second form))
+                                env)))
+                 
+                   (if jez--need-orig
+                       ;; form used orig
+                       (progn
+                         (setf need-orig-sym t)
+                         `(progn
+                            (setf ,orig-sym (pop ,tmp-sym))
+                            ,inner))
+                     ;; form didn't use orig
+                     `(progn
+                        (setf ,tmp-sym (rest ,tmp-sym))
+                        ,inner)))
+             
+               ;; don't have a form for this slot; use previous value
+               `(pop ,tmp-sym)))))
+
+      `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
+         (,(if slots 'list* 'list)
+          ,@body
+          ,@(if slots (list tmp-sym)))))))
+
+(jez-define-functional-struct
+  (jez-rule
+   :named
+   (:type list)
+   (:constructor jez--make-rule)
+   (:conc-name jez-rule--))
+  
   "A rule in an jez grammar."
 
   ;; Symbol naming this rule.
@@ -10,23 +187,6 @@
 
   ;; Function that expands this rule
   expander
-  )
-
-(defstruct (jez-compiled-rule
-            (:constructor jez--make-compiled-rule)
-            (:conc-name jez-compiled-rule--))
-  "A rule compiled for a specific parser with specific arguments."
-
-  ;; the uncompiled version of this rule
-  rule
-
-  ;; the parser for which the above rule was compiled
-  parser
-
-  ;; sexp that gets pushed onto the success-stack when we're about to
-  ;; match this rule
-  matcher
-  
   )
 
 (defstruct (jez-grammar
@@ -69,23 +229,23 @@ tokens into an AST."
   ;;
   states)
 
-(defun jez-parser--make-state-func (p &rest sf)
+(defun jez-parser--make-state-func (parser function &rest args)
   "Return a callable lisp function for the given primitive form."
 
-  (or
-   (gethash sf (jez-parser--state-funcs p))
-   (puthash sf (byte-compile
-                `(lambda (s)
-                   ,@sf)))))
+  (let ((sf `(,function jez--current-state ,@args)))
+
+    (or
+     (gethash sf (jez-parser--state-funcs p))
+     (puthash sf (byte-compile
+                  `(lambda (jez--current-state)
+                     ,@sf))))))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
+            (:copier nil)
             (:conc-name jez-state--))
   
   "A particular state of a parse operation."
-
-  ;; Reference to the parser that created us (which is immutable)
-  parser
 
   ;; The parse tree we've constructed so far, a jez-tree instance
   ast
@@ -102,7 +262,8 @@ tokens into an AST."
   ;; Stack (lisp list) of states to enter when successful
   and-stack
 
-  )
+  ;; Reference to the parser that created us (which is immutable)
+  parser)
 
 (defstruct (jez-environment
             (:constructor jez--make-environment)
@@ -505,13 +666,40 @@ Compile the rule if necessary."
 
 (put 'jez-grammar-define-rule 'lisp-indent-function 3)
 
-(defun* jez--do-: (s child-state next-state)
-  ;; XXX: implement me properly. The lines below are junk.
-  (push child-state (jez-state--and-stack s))
-  (push next-state (jez-state--and-stack s)))
+(defun* jez-state--push-and (s &rest items)
+  (jez--make-state
+   :ast (jez-state--ast s)
+   :reach (jez-state--reach s)
+   :point (jez-state--point s)
+   :or-stack (jez-state--or-stack s)
+   :and-stack (append items (jez-state--and-stack s))
+   :parser (jez-state--parser s)))
 
-(defun* jez--compile-: (env terms)
-  "Compile sequence primitive."
+(defun* jez-state--push-or (s &rest items)
+  (jez--make-state
+   :ast (jez-state--ast s)
+   :reach (jez-state--reach s)
+   :point (jez-state--point s)
+   :or-stack (append items (jez-state--or-stack s))
+   :and-stack (jez-state--and-stack s)
+   :parser (jez-state--parser s)))
+
+(defun* jez--do-sequence (s child-state next-state)
+  "Parse-func implementing sequence operations."
+  (jez-state--push-and s (list child-state next-state)))
+
+(defun* jez--preprocess-sequence (env terms)
+  "Return a list of (TERM . BINDING) pairs for the given terms.
+Values are returned in reversed order."
+  (reverse
+   (loop for term in terms
+         collect (if (eq (car-safe term) '<-)
+                     (error "XXX implement <-")
+                   (cons term nil)))))
+
+(defun* jez--compile-sequence (env terms)
+  "Compile a sequence of terms.  Return the state-func used to
+begin matching the terms."
 
   ;; This function generates a function that can be pushed onto one of
   ;; our state stacks as the i=0 state.  The generated function
@@ -540,37 +728,23 @@ Compile the rule if necessary."
   ;; and not just at the end of the overall rule.
   ;;
   
-  (let ((parser (jez-environment--parser env))
-        binding rbindings rterms state-func)
-    
-    ;; Loop forward through all terms, accumulating information about
-    ;; which ones bind variables. We don't compile the terms right
-    ;; away because each one needs to know its successor.
-    (dolist (term terms)
-      (setf binding nil)
-      
-      (when (eq (car-safe term) '<-)
-        (pop term)
-        (setf binding (pop term)))
-
-      (push term rterms)
-      (push binding rbindings))
-
-    ;; Compile the terms in reverse order so that each one references
-    ;; the next.
-
-    (while rterms
-      (setf binding (pop rbindings))
-      (setf state-func
-            (jez-parser--make-state-func
-             parser
-             `(jez-do-: s                        ; anaphoric `s'
-                        ,(jez-compile-rd env (pop rterms))
-                        ,state-func))))
-    
-    ;; The term we compiled last is the one that is logically
-    ;; first. Return it to our caller as the "compiled" rule.
-    state-func))
+  
+  ;; Loop forward through all terms, accumulating information about
+  ;; which ones bind variables. We don't compile the terms right
+  ;; away because each one needs to know its successor.
+  
+  ;; Having build up intermediate information about the meaning of
+  ;; each term, compile the terms in reverse order.
+  
+  (loop 
+   for (term . binding) in (jez--preprocess-sequence env terms)
+   for state-func = nil
+   then (jez-parser--make-state-func
+         (jez-environment--parser env)
+         'jez--do-sequence
+         (jez-compile-rd env term)
+         state-func)
+   finally return state-func))
 
 (defun* jez--do-* (s child-state)
   ;; XXX: non-backtracking alternative.
@@ -628,10 +802,9 @@ Compile the rule if necessary."
       (setf state-func
             (jez-parser--make-state-func
              parser
-             `(jez--do-/
-               s                        ; anaphoric `s'
-               ,(jez-compile-rd env term)
-               state-func))))
+             'jez--do-/
+             (jez-compile-rd env term)
+             state-func)))
 
     ;; The state compiled last is logically first. Return it.
     state-func))
@@ -680,20 +853,6 @@ functions as needed.
 "
   (funcall (pop (jez-state-control-stack state))
            state))
-
-;; '(jez-make-grammar 
-;;   `((:import jez-base-grammar :as x)
-
-;;     (hello-target
-;;      (/ (x.keyword "world")
-;;         (x.keyword "blarg")))
-  
-;;     (top 
-;;      (<- first-word (x.keyword "hello"))
-;;      (syntactic-ws)
-;;      (<- second-word hello-target)
-         
-;;      )))
 
 
 (provide 'jezebel)
