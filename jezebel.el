@@ -1,181 +1,7 @@
 (require 'cl)
+(require 'jezebel-util)
 
-(defmacro* jez-define-functional-struct (name &rest orig-slots)
-  "`defstruct' specialized for pure functional data structures.
-A structure is defined just as `defstruct' would, except that an
-additional copy-and-modify function is defined.  
-
-This copy-and-modify function permits copying and modifying an
-instance of the structure in one step.  If the structure is
-defined to be a list, then unmodified parts of the structure may
-be shared.  List structures benefit from having their fields
-arranged from most to least frequently modified.
-
-This function supports a new :copymod struct option.  If present,
-its argument will be used as the name of copy-and-modify macro to
-generate.  The name defaults to copy-and-modify-NAME.
-
-"
-  (let (name-symbol
-        filtered-options
-        (copymod-name 'jez--unknown)
-        struct-type
-        named
-        slots)
-    
-    ;; Normalize name and extract the struct name symbol
-    (when (symbolp name)
-      (setf name (list name)))
-    (setf name-symbol (first name))
-
-    ;; Parse struct options and filter out anything we know
-    ;; `defstruct' proper does not understand.
-    (dolist (option (rest name))
-      (let (filter-out)
-        (when (symbolp option)
-          (setf option (list option)))
-        (case (car-safe option)
-          (:named
-           (setf named t))
-          (:type
-           (setf struct-type (second option)))
-          (:copymod
-           (setf copymod-name (second option))
-           (setf filter-out t)))
-        (unless filter-out
-          (push option filtered-options))))
-    (setf name (list* name-symbol filtered-options))
-
-    ;; Compute defaults
-
-    (when (eq copymod-name 'jez--unknown)
-      (setf copymod-name
-            (intern (format "copy-and-modify-%s" name-symbol))))
-
-    (when (and (null named) (null struct-type))
-      (setf named (intern (format "cl-struct-%s" name-symbol))))
-    
-    (setf struct-type
-          (ecase struct-type
-            ((vector nil) 'vector)
-            (list 'list)))
-    
-    ;; Parse slots, first adding a dummy slot for the name if
-    ;; necessary.
-    
-    (when named
-      (push 'jez--name-slot slots))
-    
-    (dolist (slot orig-slots)
-      (when (not (stringp slot))
-        (push (intern
-               (format ":%s" (if (symbolp slot) slot (car slot))))
-              slots)))
-    
-    (setf slots (reverse slots))
-    
-    `(progn
-       (defstruct ,name ,@orig-slots)
-       ,@(when copymod-name
-           (list
-            `(defmacro* ,copymod-name
-                 (inst &rest modifiers &environment env)
-               (,(if (eq struct-type 'list)
-                     'jez--copymod-list
-                   'jez--copymod-vector)
-                inst modifiers
-                ',slots ',named
-                env))
-            `(put ',copymod-name 'lisp-indent-function 1))
-           ))))
-
-(defun* jez--copymod-check-modifiers (modifiers slots)
-  "Signal error if MODIFIERS not valid for SLOTS.  Used in
-implementation of jez--copymod-*."
-  (loop for modifier-key = (pop modifiers)
-        for modifier-form = (pop modifiers)
-        until (null modifier-key)
-        unless (and (keywordp modifier-key)
-                    (memq modifier-key slots))
-        do (error "invalid modifier: %s" modifier-key)))
-
-(defun* jez--copymod-vector (inst modifiers slots named env)
-  "Implement copymod macro for vector structures."
-  ;; TODO: benchmark and tune. Might we want to just build a vector if
-  ;; we have a large enough number of modifiers?
-  (jez--copymod-check-modifiers modifiers slots)
-  (let ((tmp-sym (gensym "jez--copymod-tmp")))
-    (cond (modifiers
-           `(let ((,tmp-sym (copy-sequence ,inst)))
-              ,@(loop for idx upfrom 0
-                      for slot in slots
-                      for form = (plist-member modifiers slot)
-                      when form collect
-                      `(aset ,tmp-sym
-                             ,idx
-                             ;; anaphoric `orig'
-                             (symbol-macrolet
-                                 ((orig (aref ,tmp-sym ,idx)))
-                               ,(second form))))
-              ,tmp-sym))
-          (t
-           inst))))
-
-(defvar jez--need-orig)
-(defmacro jez--need-orig-hack (sym)
-  (setf jez--need-orig t)
-  sym)
-
-(defun* jez--copymod-list (inst modifiers slots named env)
-  "Implement copymod macro for list structures."
-  ;; TODO: benchmark and tune performance.
-  (jez--copymod-check-modifiers modifiers slots)
-  (if (null modifiers)
-      inst
-    (let* ((tmp-sym (gensym "jez--copymod-tmp"))
-           (orig-sym (gensym "jez--copymod-orig"))
-           (nr-modifiers (/ (length modifiers) 2))
-           jez--need-orig
-           need-orig-sym
-           (body
-            (loop
-             for slot = (car slots)
-             for form = (plist-member modifiers slot)
-             while (> nr-modifiers 0)
-             do (pop slots)
-             when form do (decf nr-modifiers)
-             collect
-             (if form
-                 ;; we have a form
-                 (let* ((jez--need-orig)
-                        (inner (cl-macroexpand-all
-                                `(symbol-macrolet
-                                     ((orig (jez--need-orig-hack
-                                             ,orig-sym)))
-                                   ,(second form))
-                                env)))
-                 
-                   (if jez--need-orig
-                       ;; form used orig
-                       (progn
-                         (setf need-orig-sym t)
-                         `(progn
-                            (setf ,orig-sym (pop ,tmp-sym))
-                            ,inner))
-                     ;; form didn't use orig
-                     `(progn
-                        (setf ,tmp-sym (rest ,tmp-sym))
-                        ,inner)))
-             
-               ;; don't have a form for this slot; use previous value
-               `(pop ,tmp-sym)))))
-
-      `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
-         (,(if slots 'list* 'list)
-          ,@body
-          ,@(if slots (list tmp-sym)))))))
-
-(jez-define-functional-struct
+(define-functional-struct
   (jez-rule
    :named
    (:type list)
@@ -191,7 +17,7 @@ implementation of jez--copymod-*."
   expander
   )
 
-(jez-define-functional-struct
+(define-functional-struct
  (jez-grammar
   (:constructor jez--make-grammar)
   (:conc-name jez-grammar--))
@@ -199,11 +25,9 @@ implementation of jez--copymod-*."
   
   rules
 
-  primitives
+  primitives)
 
-  )
-
-(jez-define-functional-struct
+(define-functional-struct
  (jez-parser
   (:constructor jez--make-parser)
   (:conc-name jez-parser--))
@@ -244,7 +68,7 @@ tokens into an AST."
                   `(lambda (jez--current-state)
                      ,@sf))))))
 
-(jez-define-functional-struct
+(define-functional-struct
  (jez-state
   (:constructor jez--make-state)
   (:copier nil)
@@ -270,7 +94,7 @@ tokens into an AST."
   ;; Reference to the parser that created us (which is immutable)
   parser)
 
-(jez-define-functional-struct
+(define-functional-struct
  (jez-environment
   (:constructor jez--make-environment)
   (:conc-name jez-environment--))
@@ -285,7 +109,7 @@ tokens into an AST."
 ;; Purely functional AST built incrementally by parsing.
 ;;
 
-(jez-define-functional-struct
+(define-functional-struct
  (jez-tree-node
   (:constructor jez--make-tree-node)
   (:copier nil)
@@ -300,7 +124,7 @@ tokens into an AST."
   properties
   )
 
-(jez-define-functional-struct
+(define-functional-struct
  (jez-tree
   (:constructor jez--make-tree)
   (:copier nil)
@@ -333,7 +157,7 @@ tokens into an AST."
 (defun* jez-tree-prepend-child (tree)
   "Add a child to the beginning of TREE's child list.  Return a
 new cursor pointing at the new child.  Constant time."
-  (jez--make-tree
+  (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
    :dirty t
    :left nil
@@ -344,7 +168,7 @@ new cursor pointing at the new child.  Constant time."
   "Add a child to the end of TREE's child list.  Return a new
 cursor pointing at the new child.  Takes time proportional to the
 number of children in TREE's current node."
-  (jez--make-tree
+  (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
    :dirty t
    :left (reverse
@@ -370,7 +194,7 @@ time proportional to the number of children in the parent."
     (unless old-parent
       (error "already at top of tree"))
     (if (jez-tree--dirty tree)
-        (jez--make-tree
+        (copy-and-modify-jez-tree old-parent
          ;; Make new child to stand in for (jez-tree--current
          ;; old-parent).  The new child incorporates any changes we've
          ;; made since we branched from parent.
@@ -383,13 +207,7 @@ time proportional to the number of children in the parent."
 
          ;; The new cursor is dirty because we need to propagate changes
          ;; all the way up to the top of the tree.
-         :dirty t
-
-         ;; We can use the original parent's left and right entries
-         ;; unchanged.
-         :left (jez-tree--left old-parent)
-         :right (jez-tree--right old-parent)
-         :parent (jez-tree--parent old-parent))
+         :dirty t)
 
       ;; Not dirty. Return original parent cursor unchanged.
       old-parent)))
@@ -420,25 +238,22 @@ time."
 current node.  Raise error if there is no previous sibling.
 Constant time."
   (let* ((old-left (jez-tree--left tree)))
-    (jez--make-tree
+    (copy-and-modify-jez-tree
      :current (or (first old-left)
+                  (debug)
                   (error "already at leftmode child"))
-     :dirty (jez-tree--dirty tree)
      :left (rest old-left)
      :right (list* (jez-tree--current tree)
-                   (jez-tree--right tree))
-     :parent (jez-tree--parent tree))))
+                   (jez-tree--right tree)))))
 
 (defun* jez-tree-next-sibling (tree)
   (let* ((old-right (jez-tree--right tree)))
-    (jez--make-tree
+    (copy-and-modify-jez-tree tree
      :current (or (first old-right)
                   (error "already at rightmode child"))
-     :dirty (jez-tree--dirty tree)
      :left (list* (jez-tree--current tree)
                   (jez-tree--left tree))
-     :right (rest old-right)
-     :parent (jez-tree--parent tree))))
+     :right (rest old-right))))
 
 (defun* jez-tree-first-child (tree)
   "Return a cursor pointing to the first child of the current
@@ -446,7 +261,7 @@ node.  Raise error if the current node has no children.  Constant
 time."
   (let ((children (jez-tree-node--children
                    (jez-tree--current tree))))
-    (jez--make-tree
+    (copy-and-modify-jez-tree tree
      :current (or (first children)
                   (error "current node has no children"))
      :dirty nil
@@ -461,7 +276,7 @@ proportional to number of children in current node."
   (let ((rchildren (reverse (jez-tree-node--children
                              (jez-tree--current tree)))))
 
-    (jez--make-tree
+    (copy-and-modify-jez-tree tree
      :current (or (first rchildren)
                   (error "current node has no children"))
      :dirty nil
@@ -474,7 +289,7 @@ proportional to number of children in current node."
 pointing to the new node.  Raise error if current node is the
 root node.  Constant time."
 
-  (jez--make-tree
+  (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
    :dirty t
    :left (jez-tree--left tree)
@@ -488,7 +303,7 @@ root node.  Constant time."
 to new node.  Raise error if current node is the root node.
 Constant time."
 
-  (jez--make-tree
+  (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
    :dirty t
    :left (list* (jez-tree--current tree)
@@ -510,17 +325,11 @@ proportional to number of existing properties."
 cursor pointing to the modified node.  Time proportional to
 number of existing properties."
 
-  (let ((old-current (jez-tree--current tree)))
-    (jez--make-tree
-     :current (jez--make-tree-node
-               :children (jez-tree-node--children old-current)
-               :properties (plist-put (copy-sequence
-                                       (jez-tree-node--properties old-current))
+  (copy-and-modify-jez-tree tree
+    :current (copy-and-modify-jez-tree-node orig
+               :properties (plist-put (copy-sequence orig)
                                       prop val))
-     :dirty t
-     :left (jez-tree--left tree)
-     :right (jez-tree--right tree)
-     :parent (jez-tree--parent tree))))
+    :dirty t))
 
 (defun* jez-make-empty-grammar ()
   "Create a new empty grammar."
@@ -814,7 +623,7 @@ begin matching the terms."
 
     ;; Initial semi-magical rules.
     
-    (jez-grammar-define-primitive root ': #'jez--compile-:)
+    (jez-grammar-define-primitive root ': #'jez--compile-sequence)
     (jez-grammar-define-primitive root '* #'jez--compile-*)
     (jez-grammar-define-primitive root '/ #'jez--compile-/)
     root)
