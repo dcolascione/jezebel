@@ -238,10 +238,9 @@ time."
 current node.  Raise error if there is no previous sibling.
 Constant time."
   (let* ((old-left (jez-tree--left tree)))
-    (copy-and-modify-jez-tree
+    (copy-and-modify-jez-tree tree
      :current (or (first old-left)
-                  (debug)
-                  (error "already at leftmode child"))
+                  (error "already at leftmost child"))
      :left (rest old-left)
      :right (list* (jez-tree--current tree)
                    (jez-tree--right tree)))))
@@ -250,7 +249,7 @@ Constant time."
   (let* ((old-right (jez-tree--right tree)))
     (copy-and-modify-jez-tree tree
      :current (or (first old-right)
-                  (error "already at rightmode child"))
+                  (error "already at rightmost child"))
      :left (list* (jez-tree--current tree)
                   (jez-tree--left tree))
      :right (rest old-right))))

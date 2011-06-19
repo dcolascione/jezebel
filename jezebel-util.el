@@ -152,16 +152,6 @@ generate.  The name defaults to copy-and-modify-NAME.
                                     (list nil nil nil)))))))
          ,(funcall inner 'inst 'slot-info)))))
 
-(defun functional-struct--vector (inst-sym slot-info-sym)
-  `(let ((new-sym (gensym "copymod-new")))
-     `(let ((,new-sym (copy-sequence ,,inst-sym)))
-        ,@(loop for idx upfrom 0
-                for (slot-name slot-value-form slot-supplied-p)
-                in ,slot-info-sym
-                when slot-supplied-p
-                collect `(aset ,new-sym ,idx ,slot-value-form))
-        ,new-sym)))
-
 (defun functional-struct--expand-anaphor (anaphor def form &optional env)
   "Expand FORM with ANAPHOR expanding to DEF.  Return a
 cons (EXPANDED . USED) where EXPANDED is the fully macroexpanded
@@ -180,6 +170,27 @@ expansion of FORM.  Macro environment ENV is used for expansion."
            ,form))
       env)
      functional-struct--expand-anaphor-hack)))
+
+(defun functional-struct--vector (inst-sym slot-info-sym)
+  `(loop
+    with new-sym = (gensym "copymod-new")
+    
+    for idx upfrom 0
+    for (slot-name slot-value-form slot-supplied-p) in ,slot-info-sym
+    when slot-supplied-p
+    collect `(aset
+              ,new-sym
+              ,idx
+              ,(first (functional-struct--expand-anaphor
+                       'orig `(aref ,new-sym ,idx)
+                       slot-value-form
+                       cl-macro-environment)))
+    into body
+    
+    finally return
+    `(let ((,new-sym (copy-sequence ,,inst-sym)))
+       ,@body
+       ,new-sym)))
 
 (defun functional-struct--list (inst-sym slot-info-sym)
   `(loop
@@ -201,11 +212,11 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     ;; this expansion will be harmless. Also, orig-used will also be
     ;; nill in this case.
     
-    for (exp orig-used) = (functional-struct--expand-anaphor
-                           'orig
-                           tmp-sym
-                           slot-value-form
-                           cl-macro-environment)
+    for (exp . orig-used) = (functional-struct--expand-anaphor
+                             'orig
+                             orig-sym
+                             slot-value-form
+                             cl-macro-environment)
 
     until (zerop nr-to-process)
 
