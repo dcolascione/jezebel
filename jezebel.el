@@ -1,12 +1,10 @@
 (require 'cl)
 (require 'jezebel-util)
 
-(define-functional-struct
-  (jez-rule
-   :named
-   (:type list)
-   (:constructor jez--make-rule)
-   (:conc-name jez-rule--))
+(defstruct (jez-rule
+            (:constructor jez--make-rule)
+            (:copier nil)
+            (:conc-name jez-rule--))
   
   "A rule in an jez grammar."
 
@@ -14,23 +12,20 @@
   name
 
   ;; Function that expands this rule
-  expander
-  )
+  expander)
 
-(define-functional-struct
- (jez-grammar
-  (:constructor jez--make-grammar)
-  (:conc-name jez-grammar--))
-  "An jez grammar for some language."
-  
+(defstruct (jez-grammar
+            (:constructor jez--make-grammar)
+            (:copier nil)
+            (:conc-name jez-grammar--))
+  "A jez grammar for some language."
   rules
-
   primitives)
 
-(define-functional-struct
- (jez-parser
-  (:constructor jez--make-parser)
-  (:conc-name jez-parser--))
+(defstruct (jez-parser
+            (:constructor jez--make-parser)
+            (:copier nil)
+            (:conc-name jez-parser--))
   
   "A compiled parser that can be used to transform a series of 
 tokens into an AST."
@@ -43,19 +38,15 @@ tokens into an AST."
 
   ;; Maps action forms (jez--do-* args...) to compiled functions.
   ;;
-  ;; The value is an EQUAL hash
-  ;;
-  state-funcs
+  (state-funcs (make-hash-table :test 'equal))
 
   ;; A map of rule expansions.
   ;;
-  ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N),
-  ;; and the hash table is a :test 'equal table.
-  ;;
+  ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N).
   ;; The values are symbols, the function slots of which contain a
   ;; function representing the given parse state.
   ;;
-  states)
+  (states (make-hash-table :test 'equal)))
 
 (defun jez-parser--make-state-func (parser function &rest args)
   "Return a callable lisp function for the given primitive form."
@@ -74,7 +65,8 @@ tokens into an AST."
   (:copier nil)
   (:conc-name jez-state--))
   
-  "A particular state of a parse operation."
+  "A particular state of a parse operation.  Pure functional
+data structure."
 
   ;; The parse tree we've constructed so far, a jez-tree instance
   ast
@@ -99,7 +91,8 @@ tokens into an AST."
   (:constructor jez--make-environment)
   (:conc-name jez-environment--))
 
-  "A lexical environment used during rule compilation."
+  "A lexical environment used during rule compilation.  Pure
+functional data structure."
 
   ;; The parser for this environment
   parser
@@ -114,7 +107,8 @@ tokens into an AST."
   (:constructor jez--make-tree-node)
   (:copier nil)
   (:conc-name jez-tree-node--))
-  "Node of an N-ary purely-functional zippered tree."
+  "Node of an N-ary purely-functional zippered tree.  Pure
+functional data structure."
 
   ;; List of children of this node; updated lazily. jez-tree-node's
   ;; zippered list for this node is authoritative when it exists.
@@ -129,7 +123,7 @@ tokens into an AST."
   (:constructor jez--make-tree)
   (:copier nil)
   (:conc-name jez-tree--))
-  "View into a jez-tree."
+  "View into a jez-tree.  Pure functional data structure."
 
   ;; Current jez-tree-node
   current
@@ -413,6 +407,8 @@ forms:
 
   `(jez-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
 
+(put 'jez-grammar-define-rule 'lisp-indent-function 3)
+
 (defun* jez-grammar--%define-rule (grammar rule-name args &rest FORMS)
   "Implementation of `jez-grammar-define-rule'.
 
@@ -442,6 +438,14 @@ nil if we were not able to expand this rule."
   ;; A bare symbol RULE is equivalent to (RULE).
   (when (symbolp rd)
     (setf rd (list rd)))
+
+  ;; A character is equivalent to a length-1 string.
+  (when (characterp rd)
+    (setf rd (char-to-string rd)))
+
+  ;; A bare string "foo" is equivalent to (literal "foo").
+  (when (stringp rd)
+    (setf rd (list 'literal rd)))
 
   (let* ((parser (jez-environment--parser env))
          (grammar (jez-parser--grammar parser))
@@ -480,15 +484,62 @@ Compile the rule if necessary."
                 (apply (first expanded-rd) env (rest rd)))
           rule-sym))))
 
-(put 'jez-grammar-define-rule 'lisp-indent-function 3)
+;;; Functions used by state functions to modify the state
 
-(defun* jez-state--push-and (s &rest items)
-  (copy-and-modify-jez-state s
-    :and-stack (append items orig)))
+(defmacro* jez-state--operate (state
+                               &key
+                               backtrack
+                               save-choice-point
+                               next
+                               (pop-current t))
+  "Perform various modifications on STATE.  Return a new state.
+The following keywords are recognized:
 
-(defun* jez-state--push-or (s &rest items)
-  (copy-and-modify-jez-state s
-    :or-stack (append items orig)))
+  :backtrack BOOL
+
+    When true, return to the previously-saved choice point.
+
+  :save-choicepoint BOOL
+
+    When true, save a choice point to which we can later
+    backtrack.
+
+  :next STATE
+
+    Add STATE to the and-stack of state. If we're also
+    backtracking, the states are added after popping the most
+    recent current choice point and restoring its AND-stack.
+
+  :pop-current BOOL
+
+    When true, remove the currently-executing statefunc from
+    state. Defaults to true.
+"
+
+  (when (and backtrack save-choice-point)
+    (error "cannot both backtrack and save a choice point"))
+  
+  `(copy-and-modify-jez-state ,state
+     ,@(append
+
+        ;; and-stack
+        (cond (backtrack
+               `(:and-stack ,saved-and-stack-sym))
+              ((and pop-current next)
+               `(:and-stack (list* ,next (rest orig))))
+              (next
+               `(:and-stack (list* ,next orig)))
+              (pop-current
+               `(:and-stack (rest orig))))
+
+        ;; point
+        (cond (backtrack
+               `(:point ,saved-point-sym)))
+
+        ;; or-stack
+        (cond (save-choice-point
+               `(:or-stack (cons XXX) orig))))))
+(put 'jez-state--operate 'lisp-indent-function 1)
 
 (defun* jez--do-sequence (s child-state next-state)
   "Parse-func implementing sequence operations."
@@ -552,23 +603,23 @@ begin matching the terms."
          state-func)
    finally return state-func))
 
-(defun* jez--do-* (s child-state)
+(defun* jez--do-repetition (s child-state)
   ;; XXX: non-backtracking alternative.
   
   )
 
-(defun* jez--do-*-first (s child-state)
+(defun* jez--do-repetition-first (s child-state)
   ;; push item onto data stack.
 
   
     
   )
 
-(defun* jez--do-*-last (s)
+(defun* jez--do-repetition-last (s)
   ;; clean up list on data stack and build AST node for it.
   )
 
-(defun* jez--compile-* (env backtrack term)
+(defun* jez--compile-repetition (env backtrack term)
   "Compile repetition primitive."
   
   ;; Match TERM as many times as we can, backtracking after each one.
@@ -586,14 +637,14 @@ begin matching the terms."
 
          )))
 
-(defun* jez--do-/ (s child-state next-alternative-state)
+(defun* jez--do-choice (s child-state next-alternative-state)
   ;; XXX: non-backtracking alternative. Even possible?
   
   (when next-alternative-state
     (push next-alternative-state (jez--state--or-stack s)))
   (push child-state (jez--state--and-stack s)))
 
-(defun* jez--compile-/ (env terms)
+(defun* jez--compile-choice (env terms)
   "Compile prioritized choice primitive."
 
   ;; Just as for sequence, compile terms in reverse order so each can
@@ -612,8 +663,31 @@ begin matching the terms."
              (jez-compile-rd env term)
              state-func)))
 
-    ;; The state compiled last is logically first. Return it.
+    ;; The state compiled last is logically first.  Return it.
     state-func))
+
+(defun* jez--do-literal (state chars)
+  (if (loop for c across chars
+            always (eql (char-after) c)
+            do (forward-char))
+      
+      ;; We matched all supplied characters.  Go to the next state.
+      ;; Point is in position for the next thing to match.
+      (jez-state--operate state
+        :pop-current t)
+    
+    ;; No match. Backtrack. Set reach to the char after point because
+    ;; _that_ character is the last one we inspected and the one that
+    ;; caused us to fail the match.
+    (jez-state--operate state
+      :backtrack t
+      :reach (1+ (point)))))
+
+(defun* jez--compile-literal (env terms)
+  (jez-parser--make-state-func
+   (jez-environment--parser env)
+   #'jez--do-literal
+   (mapconcat #'identity terms "")))
 
 (defconst jez-root-grammar
   (let ((root (jez--make-grammar
@@ -623,11 +697,14 @@ begin matching the terms."
     ;; Initial semi-magical rules.
     
     (jez-grammar-define-primitive root ': #'jez--compile-sequence)
-    (jez-grammar-define-primitive root '* #'jez--compile-*)
-    (jez-grammar-define-primitive root '/ #'jez--compile-/)
+    (jez-grammar-define-primitive root '* #'jez--compile-repetition)
+    (jez-grammar-define-primitive root '/ #'jez--compile-choice)
+
+    ;; The grammar compiler has a special case that transforms literal
+    ;; strings and characters into forms like (literal "foo").
+    (jez-grammar-define-primitive root 'literal #'jez--compile-literal)
     root)
   "The grammar inherited by all other grammars.")
-
 
 (defun* jez-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
@@ -640,9 +717,7 @@ begin matching the terms."
   ;; First, create a basic parser.
   
   (let* ((parser (jez--make-parser
-                  :grammar grammar
-                  :state-funcs (make-hash-table :test 'equal)
-                  :states (make-hash-table :test 'equal))))
+                  :grammar grammar)))
 
     ;; Then, eagerly initialize the rule tree.
     (setf (jez-parser--initial-state parser)
@@ -651,14 +726,10 @@ begin matching the terms."
     ;; Parser is now ready to use to begin parsing
     parser))
 
-(defun* jez-state++ (state)
-  "Perform one step of a parse.
-
-Update STATE by side effect, calling preconfigured callback
-functions as needed.
-"
-  (funcall (pop (jez-state-control-stack state))
-           state))
+(defun* jez-step-state (state)
+  "Update parse state STATE by one step and return the new parse
+state.  This operation preserves the old value of STATE."
+  (funcall (pop (jez-state--and-stack state)) state))
 
 
 (provide 'jezebel)

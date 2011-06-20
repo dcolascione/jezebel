@@ -122,6 +122,7 @@ generate.  The name defaults to copy-and-modify-NAME.
     `(progn
        (defstruct ,name ,@orig-slots)
        ,(functional-struct--inner
+         name-symbol
           (ecase struct-type
             (list   'functional-struct--list)
             (vector 'functional-struct--vector)
@@ -130,27 +131,44 @@ generate.  The name defaults to copy-and-modify-NAME.
           slots)
        ',name-symbol)))
 
-(defun* functional-struct--inner (inner copymod-name slots)
-  (let ((slots-supplied
-         (loop for slot in slots
-               collect (intern (format "%s-supplied-p" slot)))))
-    `(defmacro* ,copymod-name
-         (inst &key 
-               ,@(loop for slot in slots
-                       for supp in slots-supplied
-                       when (and slot (symbolp slot))
-                       collect (list slot nil supp)))
-       (let ((slot-info (list
-                         ,@(loop for slot in slots
-                                 for supp in slots-supplied
-                                 collect
-                                 (append
-                                  '(list)
-                                  (if (and slot (symbolp slot))
-                                      (list (list 'quote slot)
-                                            slot supp)
-                                    (list nil nil nil)))))))
-         ,(funcall inner 'inst 'slot-info)))))
+(defun* functional-struct--inner (name-symbol inner copymod-name slots)
+  (let* ((slots-supplied
+          (loop for slot in slots
+                collect (intern (format "%s-supplied-p" slot))))
+         (docstr (concat
+                  "Copy and modify an instance of "
+                  (symbol-name name-symbol)
+                  ".\n\n"
+                  "(fn INST &key"
+                  (mapconcat (lambda (slot)
+                               (if (and slot (symbolp slot))
+                                   (concat
+                                    " "
+                                    (upcase (symbol-name slot)))
+                                 ""))
+                             slots "")
+                  ")")))
+    (when copymod-name
+      `(progn
+         (defmacro* ,copymod-name
+             (inst &key 
+                   ,@(loop for slot in slots
+                           for supp in slots-supplied
+                           when (and slot (symbolp slot))
+                           collect (list slot nil supp)))
+             ,docstr
+           (let ((slot-info (list
+                             ,@(loop for slot in slots
+                                     for supp in slots-supplied
+                                     collect
+                                     (append
+                                      '(list)
+                                      (if (and slot (symbolp slot))
+                                          (list (list 'quote slot)
+                                                slot supp)
+                                        (list nil nil nil)))))))
+             ,(funcall inner 'inst 'slot-info)))
+         (put ',copymod-name 'lisp-indent-function 1)))))
 
 (defun functional-struct--expand-anaphor (anaphor def form &optional env)
   "Expand FORM with ANAPHOR expanding to DEF.  Return a
