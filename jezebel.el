@@ -59,11 +59,10 @@ tokens into an AST."
                   `(lambda (jez--current-state)
                      ,@sf))))))
 
-(define-functional-struct
- (jez-state
-  (:constructor jez--make-state)
-  (:copier nil)
-  (:conc-name jez-state--))
+(defstruct (jez-state
+            (:constructor jez--make-state)
+            (:copier nil)
+            (:conc-name jez-state--))
   
   "A particular state of a parse operation.  Pure functional
 data structure."
@@ -73,9 +72,6 @@ data structure."
 
   ;; Reach (buffer position)
   reach
-
-  ;; Current position
-  point
 
   ;; Stack (lisp list) of states to enter when backtracking
   or-stack
@@ -484,65 +480,32 @@ Compile the rule if necessary."
                 (apply (first expanded-rd) env (rest rd)))
           rule-sym))))
 
-;;; Functions used by state functions to modify the state
+(defun jez-state-queue (state state-func)
+  "Add STATE-FUNC to STATE and-stack."
+  (push (jez-state--and-stack state) state-func))
 
-(defmacro* jez-state--operate (state
-                               &key
-                               backtrack
-                               save-choice-point
-                               next
-                               (pop-current t))
-  "Perform various modifications on STATE.  Return a new state.
-The following keywords are recognized:
+(defun jez-state-backtrack (state)
+  "Back up to most recent choice point in STATE."
+  ;; N.B. Must match list in jez-state-add-choice-point
+  (let ((cp (pop (jez-state--or-stack state))))
+    (goto-char (pop cp))
+    (jez-state-queue state (pop cp))
+    (setf (jez-state--ast (pop cp)))
+    (assert (null cp))))
 
-  :backtrack BOOL
-
-    When true, return to the previously-saved choice point.
-
-  :save-choicepoint BOOL
-
-    When true, save a choice point to which we can later
-    backtrack.
-
-  :next STATE
-
-    Add STATE to the and-stack of state. If we're also
-    backtracking, the states are added after popping the most
-    recent current choice point and restoring its AND-stack.
-
-  :pop-current BOOL
-
-    When true, remove the currently-executing statefunc from
-    state. Defaults to true.
-"
-
-  (when (and backtrack save-choice-point)
-    (error "cannot both backtrack and save a choice point"))
+(defun jez-state-add-choice-point (state state-func)
+  "Add a choice point to STATE."
   
-  `(copy-and-modify-jez-state ,state
-     ,@(append
-
-        ;; and-stack
-        (cond (backtrack
-               `(:and-stack ,saved-and-stack-sym))
-              ((and pop-current next)
-               `(:and-stack (list* ,next (rest orig))))
-              (next
-               `(:and-stack (list* ,next orig)))
-              (pop-current
-               `(:and-stack (rest orig))))
-
-        ;; point
-        (cond (backtrack
-               `(:point ,saved-point-sym)))
-
-        ;; or-stack
-        (cond (save-choice-point
-               `(:or-stack (cons XXX) orig))))))
-(put 'jez-state--operate 'lisp-indent-function 1)
+  (push (list
+         ;; N.B. Must match list in jez-state-backtrack       
+         (point)
+         state-func
+         (jez-state--ast state))
+        (jez-state--or-stack state)))
 
 (defun* jez--do-sequence (s child-state next-state)
   "Parse-func implementing sequence operations."
+  
   (jez-state--push-and s (list child-state next-state)))
 
 (defun* jez--preprocess-sequence (env terms)
@@ -666,22 +629,11 @@ begin matching the terms."
     ;; The state compiled last is logically first.  Return it.
     state-func))
 
-(defun* jez--do-literal (state chars)
-  (if (loop for c across chars
-            always (eql (char-after) c)
-            do (forward-char))
-      
-      ;; We matched all supplied characters.  Go to the next state.
-      ;; Point is in position for the next thing to match.
-      (jez-state--operate state
-        :pop-current t)
-    
-    ;; No match. Backtrack. Set reach to the char after point because
-    ;; _that_ character is the last one we inspected and the one that
-    ;; caused us to fail the match.
-    (jez-state--operate state
-      :backtrack t
-      :reach (1+ (point)))))
+(defun jez--do-literal (state str)
+  (let ((qstr (concat "\\'" (regexp-quote str))))
+    (jez-state-reach-forward (length str))
+    (unless (re-search-forward qstr nil t)
+      (jez-state-backtrack state))))
 
 (defun* jez--compile-literal (env terms)
   (jez-parser--make-state-func
