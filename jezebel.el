@@ -71,21 +71,21 @@ data structure."
   ast
 
   ;; Reach (buffer position)
-  reach
+  (reach 0)
 
-  ;; Stack (lisp list) of states to enter when backtracking
-  or-stack
+  ;; Stack states to enter when backtracking
+  (or-stack (make-vector 1024 nil))
+  (or-stack-pos 0)
 
-  ;; Stack (lisp list) of states to enter when successful
+  ;; Stack of states to enter when successful
   and-stack
 
   ;; Reference to the parser that created us (which is immutable)
   parser)
 
-(define-functional-struct
- (jez-environment
-  (:constructor jez--make-environment)
-  (:conc-name jez-environment--))
+(defstruct (jez-environment
+            (:constructor jez--make-environment)
+            (:conc-name jez-environment--))
 
   "A lexical environment used during rule compilation.  Pure
 functional data structure."
@@ -111,8 +111,7 @@ functional data structure."
   children
 
   ;; plist of properties of this node
-  properties
-  )
+  properties)
 
 (define-functional-struct
  (jez-tree
@@ -480,33 +479,97 @@ Compile the rule if necessary."
                 (apply (first expanded-rd) env (rest rd)))
           rule-sym))))
 
-(defun jez-state-queue (state state-func)
-  "Add STATE-FUNC to STATE and-stack."
-  (push (jez-state--and-stack state) state-func))
+(defun jez--double-vector (vec)
+  "Return a copy of vector VEC of twice its length.  The additional
+elements are set to nil."
+  (loop
+   with new-vec = (make-vector (* (length vec) 2))
+   for i from 0 to (length vec)
+   do (setf (aref new-vec i) (aref vec i))
+   finally return new-vec))
 
-(defun jez-state-backtrack (state)
+(defmacro jez--push-vector (vec-place pos-place item)
+  "Add ITEM to the extensible vector given by VEC-PLACE and
+POS-PLACE, expanding the vector if appropriate.
+
+N.B VEC-PLACE and POS-PLACE may be evaluated more than once.
+"
+  `(progn
+     (when (<= (length ,vec-place) ,pos-place)
+       (assert (= (length ,vec-place) ,pos-place))
+       (setf ,vec-place (jez--double-vector ,vec-place)))
+     (setf (aref ,vec-place (incf ,pos-place)) ,item)))
+
+(defmacro jez--pop-vector (vec-place pos-place)
+  "Return and remove the value at the end of the extensible
+vector given by VEC-PLACE and POS-PLACE."
+  `(prog1
+     (aref ,vec-place (decf ,pos-place))
+     (assert (>= ,pos-place 0))))
+
+(defun* jez-state-backtrack (state)
   "Back up to most recent choice point in STATE."
-  ;; N.B. Must match list in jez-state-add-choice-point
-  (let ((cp (pop (jez-state--or-stack state))))
-    (goto-char (pop cp))
-    (jez-state-queue state (pop cp))
-    (setf (jez-state--ast (pop cp)))
-    (assert (null cp))))
+  (loop until (funcall (aref (jez-state--or-stack state)
+                             (decf (jez-state--or-stack-pos state)))
+                       state)))
 
-(defun jez-state-add-choice-point (state state-func)
+(defun* jez-state-add-undo-1 (state item)
+  "Add an undo record to STATE.  
+
+To backtrack, we pop the first item from STATE's or-stack and
+call it as a function.  If this function returns nil, we repeat
+the process.  The called function may pop additional values from
+the or-stack."
+  (jez--push-vector (jez-state--or-stack state)
+                    (jez-state--or-stack-pos state)))
+
+(defun* jez-state-add-undo (state &rest items)
+  "Add ITEMS to STATE's undo stack.  The last item will be at the
+top of the stack."
+  (dolist (item items)
+    (jez-state-add-undo-1 state item)))
+
+(define-compiler-macro jez-state-add-undo (state &rest items)
+  (let ((nr (length items)))
+    `(symbol-macrolet ((os (jez-state--or-stack state))
+                       (osp (jez-state--or-stack-pos state)))
+       (when (<= (+ osp ,nr) (length os))
+         (setf os (jez--double-vector os)))
+       ,@(loop for item in items
+               (aset os (incf osp) ,item)))))
+
+(defun* jez-state-pop-undo (state)
+  (jez--pop-vector (jez-state--or-stack state)
+                   (jez-state--or-stack-pos state)))
+(put 'jez-state-add-undo* 'lisp-indent-function 1)
+
+(defun* jez--undo-handle-choice-point (state)
+  (goto-char (jez-state-pop-undo state))
+  (setf (jez-state--and-stack state) (jez-state-pop-undo state))
+  t)
+
+(defun* jez-state-add-choice-point (state state-func)
   "Add a choice point to STATE."
   
-  (push (list
-         ;; N.B. Must match list in jez-state-backtrack       
-         (point)
-         state-func
-         (jez-state--ast state))
-        (jez-state--or-stack state)))
+  (jez-state-add-undo* state
+    (if state-func
+        (cons state-func (jez-state--and-stack state))
+        (jez-state--and-stack state))
+    (point)
+    #'jez--undo-handle-choice-point))
 
-(defun* jez--do-sequence (s child-state next-state)
+(defun* jez-state-do-next (state state-func)
+  "Add STATE-FUNC to STATE and-stack."
+  (push state-func (jez-state--and-stack state)))
+
+(defun* jez-state-finish-current (state)
+  (pop (jez-state--and-stack state)))
+
+(defun* jez--do-sequence (state child-state next-state)
   "Parse-func implementing sequence operations."
-  
-  (jez-state--push-and s (list child-state next-state)))
+  (jez-state-finish-current state)
+  (jez-state-do-next state child-state)
+  (jez-state-do-next state next-state))
 
 (defun* jez--preprocess-sequence (env terms)
   "Return a list of (TERM . BINDING) pairs for the given terms.
@@ -517,7 +580,7 @@ Values are returned in reversed order."
                      (error "XXX implement <-")
                    (cons term nil)))))
 
-(defun* jez--compile-sequence (env terms)
+(defun* jez-compile-sequence (env terms)
   "Compile a sequence of terms.  Return the state-func used to
 begin matching the terms."
 
@@ -566,46 +629,23 @@ begin matching the terms."
          state-func)
    finally return state-func))
 
-(defun* jez--do-repetition (s child-state)
-  ;; XXX: non-backtracking alternative.
-  
-  )
+(defun* jez--do-repetition (state child-state)
+  ;; We don't remove ourselves from the and-stack --- we just match
+  ;; the child state over and over until we eventually fail, at which
+  ;; point we backtrack and we're done.
+  (jez-state-add-choice-point state nil)
+  (jez-state-add state child-state))
 
-(defun* jez--do-repetition-first (s child-state)
-  ;; push item onto data stack.
+(defun* jez--compile-repetition (env &rest terms)
+  (jez-parser--make-state-func
+   (jez-environment--parser env)
+   'jez--do-repetition
+   (jez-compile-sequence env terms)))
 
-  
-    
-  )
-
-(defun* jez--do-repetition-last (s)
-  ;; clean up list on data stack and build AST node for it.
-  )
-
-(defun* jez--compile-repetition (env backtrack term)
-  "Compile repetition primitive."
-  
-  ;; Match TERM as many times as we can, backtracking after each one.
-
-  (let* ((parser (jez-environment--parser env))
-         (last (jez-parser--make-state-func
-                parser `(jez--do-*-last s)))
-         (nth (jez-parser--make-state-func
-                parser `(jez--do-*-nth s ,last)))
-         (first (jez-parser--make-state-func
-                 (jez-parser--make-state-func
-                parser `(jez--do-*-first s ,nth ,last))))
-
-         
-
-         )))
-
-(defun* jez--do-choice (s child-state next-alternative-state)
-  ;; XXX: non-backtracking alternative. Even possible?
-  
-  (when next-alternative-state
-    (push next-alternative-state (jez--state--or-stack s)))
-  (push child-state (jez--state--and-stack s)))
+(defun* jez--do-choice (state child-state next-alternative-state)
+  (jez-state-finish-current state)
+  (jez-state-add-choice-point state next-alternative-state)
+  (jez-state-do-next state child-state))
 
 (defun* jez--compile-choice (env terms)
   "Compile prioritized choice primitive."
@@ -622,14 +662,15 @@ begin matching the terms."
       (setf state-func
             (jez-parser--make-state-func
              parser
-             'jez--do-/
-             (jez-compile-rd env term)
+             'jez--do-choice
+             (jez-compile-sequence env term)
              state-func)))
 
     ;; The state compiled last is logically first.  Return it.
     state-func))
 
-(defun jez--do-literal (state str)
+(defun* jez--do-literal (state str)
+  (jez-state-finish-current state)
   (let ((qstr (concat "\\'" (regexp-quote str))))
     (jez-state-reach-forward (length str))
     (unless (re-search-forward qstr nil t)
@@ -648,7 +689,7 @@ begin matching the terms."
 
     ;; Initial semi-magical rules.
     
-    (jez-grammar-define-primitive root ': #'jez--compile-sequence)
+    (jez-grammar-define-primitive root ': #'jez-compile-sequence)
     (jez-grammar-define-primitive root '* #'jez--compile-repetition)
     (jez-grammar-define-primitive root '/ #'jez--compile-choice)
 
@@ -658,10 +699,18 @@ begin matching the terms."
     root)
   "The grammar inherited by all other grammars.")
 
+(defun* jez--update-hash (dest src)
+  "Copy all entries in hash SRC into DEST."
+  (maphash (lambda (key value)
+             (puthash key value dest))
+           src))
+
 (defun* jez-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
-  (assert nil nil "IMPLEMENT ME XXX")
-  )
+  (jez--update-hash (jez-grammar--primitives grammar)
+                    (jez-grammar--primitives other-grammar))
+  (jez--update-hash (jez-grammar--rules grammar)
+                    (jez-grammar--rules other-grammar)))
 
 (defun* jez-create-parser (grammar top-rd)
   "Compiles grammar GRAMMAR into a jez-parser."
@@ -675,7 +724,7 @@ begin matching the terms."
     (setf (jez-parser--initial-state parser)
           (jez-parser--expand-rule top-rd))
     
-    ;; Parser is now ready to use to begin parsing
+    ;; Parser is now ready for use.
     parser))
 
 (defun* jez-step-state (state)
