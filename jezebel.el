@@ -1,26 +1,15 @@
 (require 'cl)
 (require 'jezebel-util)
 
-(defstruct (jez-rule
-            (:constructor jez--make-rule)
-            (:copier nil)
-            (:conc-name jez-rule--))
-  
-  "A rule in an jez grammar."
-
-  ;; Symbol naming this rule.
-  name
-
-  ;; Function that expands this rule
-  expander)
+;; (declare (optimize (speed 3) (safety 0)))
 
 (defstruct (jez-grammar
             (:constructor jez--make-grammar)
             (:copier nil)
             (:conc-name jez-grammar--))
   "A jez grammar for some language."
-  rules
-  primitives)
+  (rules (make-hash-table :test 'equal))
+  (primitives (make-hash-table :test 'equal)))
 
 (defstruct (jez-parser
             (:constructor jez--make-parser)
@@ -48,16 +37,17 @@ tokens into an AST."
   ;;
   (states (make-hash-table :test 'equal)))
 
-(defun jez-parser--make-state-func (parser function &rest args)
+(defun* jez-parser--make-state-func (parser function &rest args)
   "Return a callable lisp function for the given primitive form."
 
   (let ((sf `(,function jez--current-state ,@args)))
 
     (or
-     (gethash sf (jez-parser--state-funcs p))
+     (gethash sf (jez-parser--state-funcs parser))
      (puthash sf (byte-compile
                   `(lambda (jez--current-state)
-                     ,@sf))))))
+                     ,@sf))
+              (jez-parser--state-funcs parser)))))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
@@ -83,248 +73,19 @@ data structure."
   ;; Reference to the parser that created us (which is immutable)
   parser)
 
-(defstruct (jez-environment
-            (:constructor jez--make-environment)
-            (:conc-name jez-environment--))
+(define-functional-struct (jez-environment
+                           (:constructor jez--make-environment)
+                           (:conc-name jez-environment--))
 
   "A lexical environment used during rule compilation.  Pure
 functional data structure."
 
   ;; The parser for this environment
-  parser
-  )
+  parser)
 
-;;
-;; Purely functional AST built incrementally by parsing.
-;;
-
-(define-functional-struct
- (jez-tree-node
-  (:constructor jez--make-tree-node)
-  (:copier nil)
-  (:conc-name jez-tree-node--))
-  "Node of an N-ary purely-functional zippered tree.  Pure
-functional data structure."
-
-  ;; List of children of this node; updated lazily. jez-tree-node's
-  ;; zippered list for this node is authoritative when it exists.
-  children
-
-  ;; plist of properties of this node
-  properties)
-
-(define-functional-struct
- (jez-tree
-  (:constructor jez--make-tree)
-  (:copier nil)
-  (:conc-name jez-tree--))
-  "View into a jez-tree.  Pure functional data structure."
-
-  ;; Current jez-tree-node
-  current
-
-  ;; Is the current node dirty?
-  dirty
-
-  ;; Children of parent to the left of current; stored in reverse
-  ;; order
-  left
-
-  ;; Children of parent to the right of current; stored in forward
-  ;; order
-  right
-  
-  ;; Parent jez-tree (not jez-tree-node!) or nil if we're at top
-  parent
-  )
-
-(defun* jez-make-empty-tree ()
-  "Create a brand-new empty tree."
-  (jez--make-tree
-   :current (jez--make-tree-node)))
-
-(defun* jez-tree-prepend-child (tree)
-  "Add a child to the beginning of TREE's child list.  Return a
-new cursor pointing at the new child.  Constant time."
-  (copy-and-modify-jez-tree tree
-   :current (jez--make-tree-node)
-   :dirty t
-   :left nil
-   :right (jez-tree-node--children (jez-tree--current tree))
-   :parent tree))
-
-(defun* jez-tree-append-child (tree)
-  "Add a child to the end of TREE's child list.  Return a new
-cursor pointing at the new child.  Takes time proportional to the
-number of children in TREE's current node."
-  (copy-and-modify-jez-tree tree
-   :current (jez--make-tree-node)
-   :dirty t
-   :left (reverse
-          (jez-tree-node--children (jez-tree--current tree)))
-   :right nil
-   :parent tree))
-
-(defun* jez-tree-up (tree)
-  "Move cursor to parent of current node.  Return a new cursor
-pointing at the parent.  Raise error if already at top of tree.
-Constant time if tree has not been modified; otherwise, takes
-time proportional to the number of children in the parent."
-
-  ;; If the current node isn't dirty, all we have to do is return the
-  ;; cursor we saved when we went down into the current node.
-
-  ;; Otherwise, life becomes trickier. We return a new cursor that
-  ;; points at a new tree node. This new node is just like our parent,
-  ;; except that its child list is reconstructed from TREE's zippered
-  ;; child list, which takes into account any modifications we made.
-
-  (let ((old-parent (jez-tree--parent tree)))
-    (unless old-parent
-      (error "already at top of tree"))
-    (if (jez-tree--dirty tree)
-        (copy-and-modify-jez-tree old-parent
-         ;; Make new child to stand in for (jez-tree--current
-         ;; old-parent).  The new child incorporates any changes we've
-         ;; made since we branched from parent.
-         :current (jez--make-tree-node
-                   :children (append (reverse (jez-tree--left tree))
-                                     (list (jez-tree--current tree))
-                                     (jez-tree--right tree))
-                   :properties (jez-tree-node--properties
-                                (jez-tree--current old-parent)))
-
-         ;; The new cursor is dirty because we need to propagate changes
-         ;; all the way up to the top of the tree.
-         :dirty t)
-
-      ;; Not dirty. Return original parent cursor unchanged.
-      old-parent)))
-
-(defun* jez-tree-first-p (tree)
-  "Return non-nil if current node of TREE has a previous sibling.
-Constant time."
-  (jez-tree--left tree))
-
-(defun* jez-tree-last-p (tree)
-  "Return non-nil if current node of TREE has a next sibling.
-Constant time."
-  (jez-tree--right tree))
-
-(defun* jez-tree-children-p (tree)
-  "Return non-nil if current node of TREE has children.  Constant
-time."
-  (jez-tree-node--children
-   (jez-tree--current tree)))
-
-(defun* jez-tree-root-p (tree)
-  "Return non-nil if current node of TREE is the root.  Constant
-time."
-  (not (jez-tree--parent tree)))
-
-(defun* jez-tree-prev-sibling (tree)
-  "Return a new cursor pointing to the previous sibling of the
-current node.  Raise error if there is no previous sibling.
-Constant time."
-  (let* ((old-left (jez-tree--left tree)))
-    (copy-and-modify-jez-tree tree
-     :current (or (first old-left)
-                  (error "already at leftmost child"))
-     :left (rest old-left)
-     :right (list* (jez-tree--current tree)
-                   (jez-tree--right tree)))))
-
-(defun* jez-tree-next-sibling (tree)
-  (let* ((old-right (jez-tree--right tree)))
-    (copy-and-modify-jez-tree tree
-     :current (or (first old-right)
-                  (error "already at rightmost child"))
-     :left (list* (jez-tree--current tree)
-                  (jez-tree--left tree))
-     :right (rest old-right))))
-
-(defun* jez-tree-first-child (tree)
-  "Return a cursor pointing to the first child of the current
-node.  Raise error if the current node has no children.  Constant
-time."
-  (let ((children (jez-tree-node--children
-                   (jez-tree--current tree))))
-    (copy-and-modify-jez-tree tree
-     :current (or (first children)
-                  (error "current node has no children"))
-     :dirty nil
-     :left nil
-     :right (rest children)
-     :parent tree)))
-
-(defun* jez-tree-last-child (tree)
-  "Return a cursor pointing to the last child of the current
-node.  Raise error if the current node has no children.  Time
-proportional to number of children in current node."
-  (let ((rchildren (reverse (jez-tree-node--children
-                             (jez-tree--current tree)))))
-
-    (copy-and-modify-jez-tree tree
-     :current (or (first rchildren)
-                  (error "current node has no children"))
-     :dirty nil
-     :left (rest rchildren)
-     :right nil
-     :parent tree)))
-
-(defun* jez-tree-insert-sibling-before (tree)
-  "Insert a sibling before current node.  Return a cursor
-pointing to the new node.  Raise error if current node is the
-root node.  Constant time."
-
-  (copy-and-modify-jez-tree tree
-   :current (jez--make-tree-node)
-   :dirty t
-   :left (jez-tree--left tree)
-   :right (list* (jez-tree--current tree)
-                 (jez-tree--right tree))
-   :parent (or (jez-tree--parent tree)
-               (error "root node cannot have siblings"))))
-
-(defun* jez-tree-insert-sibling-after (tree)
-  "Insert a sibling after current node.  Return a cursor pointing
-to new node.  Raise error if current node is the root node.
-Constant time."
-
-  (copy-and-modify-jez-tree tree
-   :current (jez--make-tree-node)
-   :dirty t
-   :left (list* (jez-tree--current tree)
-                (jez-tree--left tree))
-   :right (jez-tree--right tree)
-   :parent (or (jez-tree--parent tree)
-               (error "root node cannot have siblings"))))
-
-(defun* jez-tree-get (tree prop)
-  "Return the value of PROP in the current node of TREE.  Time
-proportional to number of existing properties."
-
-  (plist-get
-   (jez-tree-node--properties (jez-tree--current tree))
-   prop))
-
-(defun* jez-tree-put (tree prop val)
-  "Set PROP to VAL in the current node of TREE.  Return a new
-cursor pointing to the modified node.  Time proportional to
-number of existing properties."
-
-  (copy-and-modify-jez-tree tree
-    :current (copy-and-modify-jez-tree-node orig
-               :properties (plist-put (copy-sequence orig)
-                                      prop val))
-    :dirty t))
-
-(defun* jez-make-empty-grammar ()
-  "Create a new empty grammar."
-  (jez--make-grammar :rules (make-hash-table)))
-
-(defmacro* jez-grammar-define-rule (grammar rule-name args &body body)
-  "Define or redefine a rule in a grammar.
+(when nil
+  (defmacro* jez-grammar-define-rule (grammar rule-name args &body body)
+    "Define or redefine a rule in a grammar.
 
 GRAMMAR gives the grammar in which to define the rule, identified
 by symbol RULE-NAME.  If RULE-NAME already exists in the grammar,
@@ -400,35 +161,13 @@ forms:
   be replaced by the previous definition of RULE-NAME in GRAMMAR.
 "
 
-  `(jez-grammar--%define-rule ,grammar ',rule-name ',args ',@body))
+    `(jez-grammar--%define-rule ,grammar ',rule-name ',args ',@body)))
 
-(put 'jez-grammar-define-rule 'lisp-indent-function 3)
-
-(defun* jez-grammar--%define-rule (grammar rule-name args &rest FORMS)
-  "Implementation of `jez-grammar-define-rule'.
-
-All the arguments have the same meaning."
-
-  (check-type rule-name symbol)
-  (check-type args list)
-  (puthash rule-name
-           `(lambda ,args ,@FORMS)
-           (jez-grammar--rules grammar)))
-
-(defun* jez-grammar-define-primitive (grammar name definition)
-  "Define a new primitive NAME for GRAMMAR.
-
-DEFINITION is a function."
-
-  (check-type name symbol)
-  (check-type definition function)
-  (puthash name definition (jez-grammar--primitives grammar)))
-
-(defun* jez-expand-rule-1 (env rd)
-  "Expand a rule RD once in ENV and return the expanded rule.
-
-RD is any legal rule definition. Return a new rule definition or
-nil if we were not able to expand this rule."
+(defun* jez-expand-rd-1 (env rd)
+  "Expand a rule RD once in ENV.  Return a cons (EXPANDED . NEW-RD) 
+where EXPANDED is true if we we were able to expand the
+rule, and NEW-RD is the expanded definition (or the original
+definition if we were uanble to expand."
 
   ;; A bare symbol RULE is equivalent to (RULE).
   (when (symbolp rd)
@@ -448,42 +187,48 @@ nil if we were not able to expand this rule."
          (rule-name (car-safe rd))
          (ruledef (gethash rule-name rules)))
 
-    (when ruledef
-      (apply (jez-rule--expander ruledef) (rest rd)))))
+    (if ruledef
+        (cons t (apply ruledef (rest rd)))
+      (cons nil rd))))
 
-(defun* jez-expand-rule (env rd)
-  "Expand the rule definition RD in PARSER.
+(defun* jez-expand-rd (env rd)
+  "Fully Expand the rule definition RD in ENV.
 Return the expanded rule, which is always a list."
 
-  (let ((new-rd (jez-expand-rule-1 env rd)))
-    (if new-rd
-        (jez-expand-rule env rd)
-      rd)))
+  (loop for (expanded . new-rd) = (cons t rd)
+        then (jez-expand-rd-1 env new-rd)
+        while expanded
+        finally return new-rd))
 
 (defun* jez-compile-rd (env rd)
   "Return the matcher for the given rule-definition RD.
 Compile the rule if necessary."
 
-  (let* ((expanded-rd (jez-expand-rule env rd))
-         (grammar (jez-parser--grammar parser))
+  (let* ((expanded-rd (jez-expand-rd env rd))
          (parser (jez-environment--parser env))
-         (states (jez-parser--states parser)))
+         (grammar (jez-parser--grammar parser))
+         (states (jez-parser--states parser))
+         (rd-sym (gethash expanded-rd states)))
 
-    ;; If we already have a definition for this rule, use that.
-    ;; Otherwise, compile a new instance.
+    (unless rd-sym
+      (setf rd-sym (gensym
+                    (format "jez-state-func-%s" (car-safe expanded-rd))))
+      (put rd-sym 'rd rd)
+      (put rd-sym 'expanded-rd expanded-rd)
+      (setf (symbol-function rd-sym)
+            (apply (or (gethash (car-safe expanded-rd)
+                                (jez-grammar--primitives grammar))
+                       (error "invalid rule %S" expanded-rd))
+                   env
+                   (rest expanded-rd))))
 
-    (or (gethash expanded-rd states)
-        (let ((rule-sym (gensym "jez-compiled-rule-")))
-          (puthash expanded-rd rule-sym states)
-          (setf (symbol-function rule-sym)
-                (apply (first expanded-rd) env (rest rd)))
-          rule-sym))))
+    rd-sym))
 
-(defun jez--double-vector (vec)
+(defun* jez--double-vector (vec &optional init)
   "Return a copy of vector VEC of twice its length.  The additional
-elements are set to nil."
+elements are set to INIT."
   (loop
-   with new-vec = (make-vector (* (length vec) 2))
+   with new-vec = (make-vector (* (length vec) 2) init)
    for i from 0 to (length vec)
    do (setf (aref new-vec i) (aref vec i))
    finally return new-vec))
@@ -498,7 +243,9 @@ N.B VEC-PLACE and POS-PLACE may be evaluated more than once.
      (when (<= (length ,vec-place) ,pos-place)
        (assert (= (length ,vec-place) ,pos-place))
        (setf ,vec-place (jez--double-vector ,vec-place)))
-     (setf (aref ,vec-place (incf ,pos-place)) ,item)))
+     (setf (aref ,vec-place
+                 (prog1 ,pos-place (incf ,pos-place)))
+           ,item)))
 
 (defmacro jez--pop-vector (vec-place pos-place)
   "Return and remove the value at the end of the extensible
@@ -507,11 +254,18 @@ vector given by VEC-PLACE and POS-PLACE."
      (aref ,vec-place (decf ,pos-place))
      (assert (>= ,pos-place 0))))
 
+(defun* jez-state-reach-forward (state new-reach)
+  (symbol-macrolet ((reach (jez-state--reach state)))
+    (assert (>= reach (point-min)))
+    (assert (>= new-reach (point-min)))
+    (setf reach (max reach new-reach))))
+
 (defun* jez-state-backtrack (state)
   "Back up to most recent choice point in STATE."
-  (loop until (funcall (aref (jez-state--or-stack state)
-                             (decf (jez-state--or-stack-pos state)))
-                       state)))
+  (symbol-macrolet ((os (jez-state--or-stack state))
+                    (osp (jez-state--or-stack-pos state)))
+    (assert (> osp 0))
+    (while (not (funcall (aref os (decf osp)) state)))))
 
 (defun* jez-state-add-undo-1 (state item)
   "Add an undo record to STATE.  
@@ -521,7 +275,8 @@ call it as a function.  If this function returns nil, we repeat
 the process.  The called function may pop additional values from
 the or-stack."
   (jez--push-vector (jez-state--or-stack state)
-                    (jez-state--or-stack-pos state)))
+                    (jez-state--or-stack-pos state)
+                    item))
 
 (defun* jez-state-add-undo (state &rest items)
   "Add ITEMS to STATE's undo stack.  The last item will be at the
@@ -530,18 +285,17 @@ top of the stack."
     (jez-state-add-undo-1 state item)))
 
 (define-compiler-macro jez-state-add-undo (state &rest items)
-  (let ((nr (length items)))
-    `(symbol-macrolet ((os (jez-state--or-stack state))
-                       (osp (jez-state--or-stack-pos state)))
-       (when (<= (+ osp ,nr) (length os))
-         (setf os (jez--double-vector os)))
-       ,@(loop for item in items
-               (aset os (incf osp) ,item)))))
+  `(symbol-macrolet ((os (jez-state--or-stack state))
+                     (osp (jez-state--or-stack-pos state)))
+     (when (<= (+ osp ,(length items)) (length os))
+       (setf os (jez--double-vector os)))
+     ,@(loop for item in items
+             collect `(aset os (incf osp) ,item))))
+(put 'jez-state-add-undo 'lisp-indent-function 1)
 
 (defun* jez-state-pop-undo (state)
   (jez--pop-vector (jez-state--or-stack state)
                    (jez-state--or-stack-pos state)))
-(put 'jez-state-add-undo* 'lisp-indent-function 1)
 
 (defun* jez--undo-handle-choice-point (state)
   (goto-char (jez-state-pop-undo state))
@@ -551,7 +305,7 @@ top of the stack."
 (defun* jez-state-add-choice-point (state state-func)
   "Add a choice point to STATE."
   
-  (jez-state-add-undo* state
+  (jez-state-add-undo state
     (if state-func
         (cons state-func (jez-state--and-stack state))
         (jez-state--and-stack state))
@@ -634,7 +388,7 @@ begin matching the terms."
   ;; the child state over and over until we eventually fail, at which
   ;; point we backtrack and we're done.
   (jez-state-add-choice-point state nil)
-  (jez-state-add state child-state))
+  (jez-state-do-next state child-state))
 
 (defun* jez--compile-repetition (env &rest terms)
   (jez-parser--make-state-func
@@ -644,7 +398,8 @@ begin matching the terms."
 
 (defun* jez--do-choice (state child-state next-alternative-state)
   (jez-state-finish-current state)
-  (jez-state-add-choice-point state next-alternative-state)
+  (when next-alternative-state
+    (jez-state-add-choice-point state next-alternative-state))
   (jez-state-do-next state child-state))
 
 (defun* jez--compile-choice (env terms)
@@ -652,8 +407,8 @@ begin matching the terms."
 
   ;; Just as for sequence, compile terms in reverse order so each can
   ;; refer to the next.  The difference is that we put terms on the
-  ;; backtracking stack so that we only try to match the N+1th term if
-  ;; the Nth term fails.
+  ;; backtracking stack so that we only try to match the (N+1)th term
+  ;; if the Nth term fails.
 
   (let ((parser (jez-environment--parser env))
         state-func)
@@ -663,7 +418,7 @@ begin matching the terms."
             (jez-parser--make-state-func
              parser
              'jez--do-choice
-             (jez-compile-sequence env term)
+             (jez-compile-rd env term)
              state-func)))
 
     ;; The state compiled last is logically first.  Return it.
@@ -672,38 +427,74 @@ begin matching the terms."
 (defun* jez--do-literal (state str)
   (jez-state-finish-current state)
   (let ((qstr (concat "\\'" (regexp-quote str))))
-    (jez-state-reach-forward (length str))
+    (jez-state-reach-forward state (length str))
     (unless (re-search-forward qstr nil t)
       (jez-state-backtrack state))))
 
-(defun* jez--compile-literal (env terms)
+(defun* jez--compile-literal (env &rest terms)
   (jez-parser--make-state-func
    (jez-environment--parser env)
    #'jez--do-literal
    (mapconcat #'identity terms "")))
-
-(defconst jez-root-grammar
-  (let ((root (jez--make-grammar
-               :rules (make-hash-table :test #'eq)
-               :primitives (make-hash-table :test #'eq))))
-
-    ;; Initial semi-magical rules.
-    
-    (jez-grammar-define-primitive root ': #'jez-compile-sequence)
-    (jez-grammar-define-primitive root '* #'jez--compile-repetition)
-    (jez-grammar-define-primitive root '/ #'jez--compile-choice)
-
-    ;; The grammar compiler has a special case that transforms literal
-    ;; strings and characters into forms like (literal "foo").
-    (jez-grammar-define-primitive root 'literal #'jez--compile-literal)
-    root)
-  "The grammar inherited by all other grammars.")
 
 (defun* jez--update-hash (dest src)
   "Copy all entries in hash SRC into DEST."
   (maphash (lambda (key value)
              (puthash key value dest))
            src))
+
+(defun* jez-grammar-compile (grammar &optional (top-rd 'top))
+  "Compiles GRAMMAR into a jez-parser, which is then returned.
+TOP-RD refers to the rule we use to begin parsing; by default, it
+is `top'."
+
+  ;; First, create a basic parser.
+  
+  (let* ((parser (jez--make-parser
+                  :grammar grammar))
+         (env (jez--make-environment
+               :parser parser)))
+
+    ;; Then, eagerly initialize the rule tree.
+    (setf (jez-parser--initial-state parser)
+          (jez-compile-rd env top-rd))
+    
+    ;; Parser is now ready for use.
+    parser))
+
+(defun* jez--pseudostate-done (state)
+  'done)
+
+(defun* jez--psuedostate-fail (state)
+  'fail)
+
+(defun* jez-begin-parse (parser)
+  "Create a new parse state."
+  (let ((state (jez--make-state :parser parser
+                                :reach (point-min))))
+
+    ;; If we try to backtrack past a choice point, there is no
+    ;; possible way to continue.  Arrange to transition to a state
+    ;; that fails forever in this case.
+    (jez-state-add-choice-point state 'jez--pseudostate-fail)
+
+    ;; After we're successfully parsed everything, transition to a
+    ;; state that succeeds forever.
+    (jez-state-do-next state 'jez--pseudostate-done)
+
+    ;; Begin parsing in the initial state.
+    (jez-state-do-next state (jez-parser--initial-state parser))
+
+    ;; Parser is now ready for use.
+    state))
+
+(defun* jez-advance (state)
+  "Update parse state STATE.  Return the symbol `done' if we are
+at the end of input, `fail' if we are at an error state, or nil
+otherwise."
+  (funcall (or (car (jez-state--and-stack state))
+               #'jez--pseudostate-done)
+           state))
 
 (defun* jez-grammar-include (grammar other-grammar)
   "Copy rules from OTHER-GRAMMAR into GRAMMAR."
@@ -712,25 +503,46 @@ begin matching the terms."
   (jez--update-hash (jez-grammar--rules grammar)
                     (jez-grammar--rules other-grammar)))
 
-(defun* jez-create-parser (grammar top-rd)
-  "Compiles grammar GRAMMAR into a jez-parser."
+(defun* jez-grammar-define-primitive (grammar name definition)
+  (check-type name symbol)
+  (check-type definition function)
+  (puthash name definition (jez-grammar--primitives grammar)))
 
-  ;; First, create a basic parser.
-  
-  (let* ((parser (jez--make-parser
-                  :grammar grammar)))
+(defun* jez-grammar-define-rule-macro (grammar rule-name args &rest def)
+  (check-type rule-name symbol)
+  (check-type args list)
+  (puthash rule-name
+           `(lambda ,args ,@def)
+           (jez-grammar--rules grammar)))
 
-    ;; Then, eagerly initialize the rule tree.
-    (setf (jez-parser--initial-state parser)
-          (jez-parser--expand-rule top-rd))
-    
-    ;; Parser is now ready for use.
-    parser))
+(defun* jez-grammar-define-rule (grammar rule-name &rest def)
+  (apply #'jez-grammar-define-rule-macro
+         grammar rule-name () def))
 
-(defun* jez-step-state (state)
-  "Update parse state STATE by one step and return the new parse
-state.  This operation preserves the old value of STATE."
-  (funcall (pop (jez-state--and-stack state)) state))
+(defun* jez-grammar-define-include (grammar other-grammar-symbol)
+  (jez-grammar-include grammar (symbol-value other-grammar-symbol)))
 
+(defun* jez-make-grammar-from-description (description)
+  (let ((grammar (jez--make-grammar)))
+    (dolist (cmd description)
+      (apply (intern (format "jez-grammar-define-%s" (car cmd)))
+             grammar
+             (rest cmd)))
+    grammar))
+
+(defmacro* jez-make-grammar (&rest description)
+  `(jez-make-grammar-from-description ',description))
+
+(defconst jez-root-grammar
+  (jez-make-grammar
+   ;; Define fundamental rule combinators.
+   (primitive : jez-compile-sequence)
+   (primitive * jez--compile-repetition)
+   (primitive / jez--compile-choice)
+     
+   ;; Define how to handle literals (note: the compiler
+   ;; automagically transforms bare strings and characters into
+   ;; calls to the literal primitive).
+   (primitive literal jez--compile-literal)))
 
 (provide 'jezebel)
