@@ -19,35 +19,29 @@
   "A compiled parser that can be used to transform a series of 
 tokens into an AST."
 
-  ;; The grammar from which this parser was constructed
+  ;; Holds the grammar from which this parser was constructed.
   grammar
 
-  ;; The initial state of this parser
+  ;; Holds initial state of this parser.
   initial-state
 
-  ;; Maps action forms (jez--do-* args...) to compiled functions.
-  ;;
-  (state-funcs (make-hash-table :test 'equal))
+  ;; Maps rule invocations to their resulting state symbols. Every
+  ;; value in this hash is also a value in states.
+  (expansion-cache (make-hash-table :test 'equal))
 
-  ;; A map of rule expansions.
-  ;;
-  ;; The keys are lists in the form (rule-name arg_1 arg_2 ... arg_N).
-  ;; The values are symbols, the function slots of which contain a
-  ;; function representing the given parse state.
-  ;;
+  ;; Maps IR forms (jez--do-* args...) to state symbols.
   (states (make-hash-table :test 'equal)))
 
-(defun* jez-parser--make-state-func (parser function &rest args)
+(defun* jez--parser-make-state (parser function &rest args)
   "Return a callable lisp function for the given primitive form."
 
-  (let ((sf `(,function jez--current-state ,@args)))
-
-    (or
-     (gethash sf (jez-parser--state-funcs parser))
-     (puthash sf (byte-compile
-                  `(lambda (jez--current-state)
-                     ,@sf))
-              (jez-parser--state-funcs parser)))))
+  (symbol-macrolet ((states (jez-parser--states parser)))
+    (let ((ir `(,function jez--current-state ,@args)))
+      (or
+       (gethash sf states)
+       (let ((state-sym (gensym "jez-state-%s" function)))
+         (put state-sym 'ir ir)
+         (puthash sf state-sym states))))))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
@@ -163,36 +157,30 @@ forms:
 
     `(jez-grammar--%define-rule ,grammar ',rule-name ',args ',@body)))
 
+(defun* jez--normalize-rd (rd)
+  (etypecase rd
+    (symbol     (jez--normalize-rd (list rd)))
+    (character  (jez--normalize-rd (char-to-string rd)))
+    (string     (jez--normalize-rd (list 'literal rd)))
+    (list       rd)))
+
 (defun* jez-expand-rd-1 (env rd)
-  "Expand a rule RD once in ENV.  Return a cons (EXPANDED . NEW-RD) 
+  "Expand a rule RD once in ENV.  Return a list (EXPANDED . NEW-RD) 
 where EXPANDED is true if we we were able to expand the
 rule, and NEW-RD is the expanded definition (or the original
 definition if we were uanble to expand."
 
-  ;; A bare symbol RULE is equivalent to (RULE).
-  (when (symbolp rd)
-    (setf rd (list rd)))
-
-  ;; A character is equivalent to a length-1 string.
-  (when (characterp rd)
-    (setf rd (char-to-string rd)))
-
-  ;; A bare string "foo" is equivalent to (literal "foo").
-  (when (stringp rd)
-    (setf rd (list 'literal rd)))
-
-  (let* ((parser (jez-environment--parser env))
-         (grammar (jez-parser--grammar parser))
-         (rules (jez-grammar--rules grammar))
-         (rule-name (car-safe rd))
-         (ruledef (gethash rule-name rules)))
-
+  (let* ((norm-rd (jez--normalize-rd rd))
+         (ruledef (gethash (car-safe norm-rd)
+                           (jez-grammar--rules
+                            (jez-parser--grammar
+                             (jez-environment--parser env))))))
     (if ruledef
-        (cons t (apply ruledef (rest rd)))
-      (cons nil rd))))
+        (cons t (apply ruledef (rest norm-rd)))
+      (cons (not (eq rd norm-rd)) norm-rd))))
 
 (defun* jez-expand-rd (env rd)
-  "Fully Expand the rule definition RD in ENV.
+  "Fully expand the rule definition RD in ENV.
 Return the expanded rule, which is always a list."
 
   (loop for (expanded . new-rd) = (cons t rd)
@@ -201,28 +189,40 @@ Return the expanded rule, which is always a list."
         finally return new-rd))
 
 (defun* jez-compile-rd (env rd)
-  "Return the matcher for the given rule-definition RD.
+  "Return the state symbol for the given rule-definition RD.
 Compile the rule if necessary."
 
-  (let* ((expanded-rd (jez-expand-rd env rd))
-         (parser (jez-environment--parser env))
+  ;; First, look for RD in the state cache.  If it's already there,
+  ;; return the state symbol.  Otherwise, try to expand the rule.  If
+  ;; expansion was successful, recursive jez-compile-rd onto the
+  ;; expanded rule.
+
+  ;; If the rule wasn't expanded, we've bottomed out, and we're either
+  ;; at a primitive or an invalid rule.  If we're at an invalid rule,
+  ;; signal an error.  Otherwise, call the corresponding primitive
+  ;; handler to allocate a symbol for the new state and set its `ir'
+  ;; property, then return the state.
+  
+  (let* ((parser (jez-environment--parser env))
          (grammar (jez-parser--grammar parser))
-         (states (jez-parser--states parser))
-         (rd-sym (gethash expanded-rd states)))
+         (expansion-cache (jez-parser--expansion-cache parser)))
 
-    (unless rd-sym
-      (setf rd-sym (gensym
-                    (format "jez-state-func-%s" (car-safe expanded-rd))))
-      (put rd-sym 'rd rd)
-      (put rd-sym 'expanded-rd expanded-rd)
-      (setf (symbol-function rd-sym)
-            (apply (or (gethash (car-safe expanded-rd)
-                                (jez-grammar--primitives grammar))
-                       (error "invalid rule %S" expanded-rd))
-                   env
-                   (rest expanded-rd))))
+    (or
+     ;; We found a cached expansion.
+     (gethash rd expansion-cache)
 
-    rd-sym))
+     ;; Rule definition can be decomposed into a more primitive rule.
+     (destructuring-bind (expanded-rd . expanded-p)
+         (jez-expand-rd-1 env rd)
+       (when expanded-p
+         (puthash rd (jez-compile-rd env expanded-rd) expansion-cache)))
+
+     ;; We weren't able to expand the rule further, so have its
+     ;; handler allocate a state and set up its IR.
+     (apply (or (gethash (first rd)
+                         (jez-grammar--primitives grammar))
+                (error "invalid rule %S" rd))
+            env (rest rd)))))
 
 (defun* jez--double-vector (vec &optional init)
   "Return a copy of vector VEC of twice its length.  The additional
@@ -302,19 +302,19 @@ top of the stack."
   (setf (jez-state--and-stack state) (jez-state-pop-undo state))
   t)
 
-(defun* jez-state-add-choice-point (state state-func)
+(defun* jez-state-add-choice-point (state state-sym)
   "Add a choice point to STATE."
   
   (jez-state-add-undo state
-    (if state-func
-        (cons state-func (jez-state--and-stack state))
+    (if state-sym
+        (cons state-sym (jez-state--and-stack state))
         (jez-state--and-stack state))
     (point)
     #'jez--undo-handle-choice-point))
 
-(defun* jez-state-do-next (state state-func)
-  "Add STATE-FUNC to STATE and-stack."
-  (push state-func (jez-state--and-stack state)))
+(defun* jez-state-do-next (state state-sym)
+  "Add STATE-SYM to STATE and-stack."
+  (push state-sym (jez-state--and-stack state)))
 
 (defun* jez-state-finish-current (state)
   (pop (jez-state--and-stack state)))
@@ -335,7 +335,7 @@ Values are returned in reversed order."
                    (cons term nil)))))
 
 (defun* jez-compile-sequence (env terms)
-  "Compile a sequence of terms.  Return the state-func used to
+  "Compile a sequence of terms.  Return the state-sym used to
 begin matching the terms."
 
   ;; This function generates a function that can be pushed onto one of
@@ -375,13 +375,13 @@ begin matching the terms."
   
   (loop 
    for (term . binding) in (jez--preprocess-sequence env terms)
-   for state-func = nil
-   then (jez-parser--make-state-func
+   for state-sym = nil
+   then (jez-parser-make-state
          (jez-environment--parser env)
          'jez--do-sequence
          (jez-compile-rd env term)
-         state-func)
-   finally return state-func))
+         state-sym)
+   finally return state-sym))
 
 (defun* jez--do-repetition (state child-state)
   ;; We don't remove ourselves from the and-stack --- we just match
@@ -391,7 +391,7 @@ begin matching the terms."
   (jez-state-do-next state child-state))
 
 (defun* jez--compile-repetition (env &rest terms)
-  (jez-parser--make-state-func
+  (jez-parser-make-state
    (jez-environment--parser env)
    'jez--do-repetition
    (jez-compile-sequence env terms)))
@@ -411,18 +411,18 @@ begin matching the terms."
   ;; if the Nth term fails.
 
   (let ((parser (jez-environment--parser env))
-        state-func)
+        state-sym)
     
     (dolist (term (reverse terms))
-      (setf state-func
-            (jez-parser--make-state-func
+      (setf state-sym
+            (jez-parser-make-state
              parser
              'jez--do-choice
              (jez-compile-rd env term)
-             state-func)))
+             state-sym)))
 
     ;; The state compiled last is logically first.  Return it.
-    state-func))
+    state-sym))
 
 (defun* jez--do-literal (state str)
   (jez-state-finish-current state)
@@ -432,9 +432,9 @@ begin matching the terms."
       (jez-state-backtrack state))))
 
 (defun* jez--compile-literal (env &rest terms)
-  (jez-parser--make-state-func
+  (jez-parser-make-state
    (jez-environment--parser env)
-   #'jez--do-literal
+   'jez--do-literal
    (mapconcat #'identity terms "")))
 
 (defun* jez--update-hash (dest src)
@@ -517,7 +517,7 @@ otherwise."
 
 (defun* jez-grammar-define-rule (grammar rule-name &rest def)
   (apply #'jez-grammar-define-rule-macro
-         grammar rule-name () def))
+         grammar rule-name () (list 'quote def)))
 
 (defun* jez-grammar-define-include (grammar other-grammar-symbol)
   (jez-grammar-include grammar (symbol-value other-grammar-symbol)))
