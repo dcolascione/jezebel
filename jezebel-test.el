@@ -1,18 +1,20 @@
 (require 'jezebel-test-util)
 (require 'jezebel)
 
-(defun jezt-create-simple-grammar ()
-  (jez-make-grammar
-   (include jez-root-grammar)
-   (rule top "hello")))
+(defconst jezt-simple-grammar
+  '((:include jez-root-grammar)
+    (top "hello")
+    (foo bar qux)))
 
-(ert-deftest jezt-make-grammar ()
-  (jezt-create-simple-grammar))
+(defun jezt-examine-grammar (grammar &rest args)
+  (let ((parser (jez--make-parser)))
+    (jez--slurp-grammar parser grammar)
+    (apply #'jez-describe-parser parser args)))
 
 (ert-deftest jezt-compile-grammar ()
-  (let* ((grammar (jezt-create-simple-grammar))
-         (parser (jez-grammar-compile grammar)))
-    (jezt-hash-table-to-alist (jez-grammar--rules grammar))
+  (let* ((parser (jez-compile jezt-simple-grammar)))
+    (jezt-hash-table-to-alist
+     (jez-parser--states parser))
     ))
 
 (provide 'jezebel-test)

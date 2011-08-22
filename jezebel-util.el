@@ -262,4 +262,10 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
        (list* ,@body ,tmp-sym))))
 
+(defun* jez--update-hash (dest src)
+  "Copy all entries in hash SRC into DEST."
+  (maphash (lambda (key value)
+             (puthash key value dest))
+           src))
+
 (provide 'jezebel-util)
