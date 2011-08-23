@@ -242,7 +242,7 @@ Values are returned in reversed order."
                      (error "XXX implement <-")
                    (cons term nil)))))
 
-(defun* jez-compile-sequence (env &rest terms)
+(defun* jez--primitive-sequence (env &rest terms)
   "Compile a sequence of terms.  Return the state-sym used to
 begin matching the terms."
 
@@ -281,10 +281,9 @@ begin matching the terms."
   (loop
    with parser = (jez-environment--parser env)
    for (term . binding) in (jez--preprocess-sequence env terms)
-   for state-sym = (jez--make-pstate parser
-                                     'match
-                                     (jez-compile-rd env term)
-                                     state-sym)
+   for state-sym = (jez--make-pstate
+                    parser
+                    `(match ,(jez-compile-rd env term) ,state-sym))
    finally return state-sym))
 
 (defun* jez--do-repetition (state child-state)
@@ -294,11 +293,10 @@ begin matching the terms."
   (jez-state-add-choice-point state nil)
   (jez-state-do-next state child-state))
 
-(defun* jez--compile-repetition (env &rest terms)
+(defun* jez--primitive-repeat (env &rest terms)
   (jez--make-pstate
-   (jez-environment--parser env)
-   'jez--do-repetition
-   (jez-compile-sequence env terms)))
+   parser
+   `(repeat ,(jez-compile-rd env (list* ': terms)))))
 
 (defun* jez--do-choice (state child-state next-alternative-state)
   (jez-state-finish-current state)
@@ -306,7 +304,7 @@ begin matching the terms."
     (jez-state-add-choice-point state next-alternative-state))
   (jez-state-do-next state child-state))
 
-(defun* jez--compile-choice (env terms)
+(defun* jez--primitive-ordered-choice (env terms)
   "Compile prioritized choice primitive."
 
   ;; Just as for sequence, compile terms in reverse order so each can
@@ -321,9 +319,7 @@ begin matching the terms."
       (setf state-sym
             (jez--make-pstate
              parser
-             'jez--do-choice
-             (jez-compile-rd env term)
-             state-sym)))
+             `(choose ,(jez-compile-rd env term) ,state-sym))))
 
     ;; The state compiled last is logically first.  Return it.
     state-sym))
@@ -335,11 +331,12 @@ begin matching the terms."
     (unless (re-search-forward qstr nil t)
       (jez-state-backtrack state))))
 
-(defun* jez--compile-literal (env &rest terms)
+(put 'match-string 'jez-state-function #'jez--do-literal)
+
+(defun* jez--primitive-literal (env &rest terms)
   (jez--make-pstate
    (jez-environment--parser env)
-   'string
-   (mapconcat #'identity terms "")))
+   `(match-string ,(mapconcat #'identity terms ""))))
 
 (defun* jez--grammar-:include (parser other-grammar)
   (jez--slurp-grammar parser other-grammar))
@@ -395,9 +392,19 @@ parsing; by default, we begin with the rule called `top'."
     ;; Fill in rules and primitives from GRAMMAR.
     (jez--slurp-grammar parser grammar)
 
-    ;; Compile the rule graph rooted at TOP.
+    ;; Compile the rule graph rooted at TOP to the intermediate
+    ;; representation.
     (setf (jez-parser--initial-state parser)
           (jez-compile-rd env top-rd))
+
+    ;; Optimize the intermediate representation.
+    ;; XXX: implement optimizer
+
+    ;; For each state, create a byte-compiled elisp function to
+    ;; transition to the next state.
+    (jez-map-reachable-states parser
+                              (jez-parser--initial-state parser)
+                              #'jez--compile-to-functions)
 
     ;; Parser is now ready to use.
     parser))
@@ -469,12 +476,12 @@ otherwise."
 
 (defconst jez-root-grammar
   '(;; Fundamental combinators.
-    (:primitive : jez-compile-sequence)
-    (:primitive * jez--compile-repetition)
-    (:primitive / jez--compile-choice)
+    (:primitive : jez--primitive-sequence)
+    (:primitive * jez--primitive-repeat)
+    (:primitive / jez--primitive-ordered-choice)
     
     ;; Literal handling (note: the compiler automagically transforms
     ;; an RD X into (literal X) if X is a character or string.
-    (:primitive literal jez--compile-literal)))
+    (:primitive literal jez--primitive-literal)))
 
 (provide 'jezebel)
