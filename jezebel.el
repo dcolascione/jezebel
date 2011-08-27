@@ -380,6 +380,25 @@ be called only during initial parser creation."
            parser
            (cdr clause))))
 
+;;; Grammar compiler
+
+(defconst jez--state-finalizer-alist
+  '((match . jez--finalize-match)
+    (choose . jez--finalize-choose)
+    (match-string . jez--finalize-match-string)
+    (repeat . jez--finalize-repeat))
+  "Alist that maps IR symbols to Lisp functions (or macros) that
+implement these actions."  )
+
+(defun* jez--finalize-state (parser state)
+  "Compile the given state graph to a compiled elisp function code."
+  (let* ((ir (get state 'ir))
+         (finalizer (or (car (assq (car ir) jez--state-finalizer-alist))
+                        (error "no state finalizer for %S" (car ir)))))
+    (byte-compile
+     `(lambda (old-state)
+        (,finalizer old-state ,@(cdr ir))))))
+
 (defun* jez-compile (grammar &optional (top-rd 'top))
   "Compiles GRAMMAR into a jez-parser. Return the new parser instance.
 TOP-RD denotes with which the generated parser will begin
