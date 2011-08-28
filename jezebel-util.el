@@ -1,6 +1,5 @@
 ;;;; Stuff from https://github.com/sroccaserra/emacs/blob/master/tools.el
 
-
 (defmacro -> (x &optional form &rest more)
   (cond ((not (null more))
          `(-> (-> ,x ,form) ,@more))
@@ -32,9 +31,131 @@
              `(if (null ,x) nil
                 ,(list form x))))))
 
-(defun delete-function (fun)
+;;;; Misc.
+
+(defmacro jez-the (type form)
+  "Like `the', except that we assert that FORM is a TYPE."
+  (setf form (cl-macroexpand-all form cl-macro-environment))
+  (if (cl-simple-expr-p form)
+      `(progn
+         (check-type ,form ,type)
+         ,form)
+    (let ((value-sym (gensym "jez-the")))
+      `(let ((,value-sym ,form))
+         (check-type ,value-sym ,type)
+         ,value-sym))))
+
+(deftype jez-list-of-type (item-type)
+  "A type representing a Lisp list of ITEM-TYPE."
+  `(satisfies (lambda (list)
+                (loop for val in list
+                      always (typep val ',item-type)))))
+
+(defun jez-delete-function (fun)
   (interactive "aFunction to delete: ")
   (fmakunbound fun))
+
+(defun* jez--update-hash (dest src)
+  "Copy all entries in hash SRC into DEST."
+  (maphash (lambda (key value)
+             (puthash key value dest))
+           src))
+
+;;; Struct access functions and macros.  N.B. These work properly only
+;;; if a struct STRUCT has a type predicate STRUCT-P, which is the
+;;; default.
+
+(defun* jez--get-slot-info (type slot)
+  "For struct TYPE, return (IDX . INFO) for SLOT."
+  (loop
+   for (slot-name . opts) in (get type 'cl-struct-slots)
+   for idx upfrom 0
+   when (eq slot-name slot)
+   return (list* idx slot-name opts)
+   finally return nil))
+
+(defun* jez--abstract-eval (form &optional default env)
+  "If FORM has a value known at compile time, return it.  Otherwise,
+return DEFAULT."
+  (setf form (cl-macroexpand-all form env))
+  (cond ((and (memq (car-safe form) '(quote function))
+              (consp (cdr form))
+              (not (cddr form)))
+         (cadr form))
+        ((typep form '(or integer character vector string keyword))
+         form)
+        ((memq form '(nil t))
+         form)
+        (t default)))
+
+(defun* jez-slot-value (type inst slot)
+  "Return the value of SLOT in struct INST of TYPE."
+  (let* ((struct-type (get type 'cl-struct-type))
+         (slot-info (jez--get-slot-info type slot)))
+    (unless slot-info
+      (error "struct %s has no slot %s" type slot))
+    (unless (typep inst type)
+      (signal 'wrong-type-argument (list type inst)))
+    (assert (typep inst type))
+    (ecase (car struct-type)
+      (vector (aref inst (car slot-info)))
+      (list (nth (car slot-info) inst)))))
+
+(defun* jez-set-slot-value (type inst slot value)
+  "Set the value of SLOT in struct INST of TYPE to VALUE."
+  (let* ((struct-type (get type 'cl-struct-type))
+         (slot-info (jez--get-slot-info type slot)))
+    (unless slot-info
+      (error "struct %s has no slot %s" type slot))
+    (unless (typep inst type)
+      (signal 'wrong-type-argument (list type inst)))
+    (ecase (car struct-type)
+      (vector (setf (aref inst (car slot-info)) value))
+      (list (setf (nth (car slot-info) inst) value)))))
+
+(defsetf jez-slot-value jez-set-slot-value)
+
+(define-compiler-macro jez-slot-value (&whole orig type inst slot)
+  (let* ((slot (jez--abstract-eval slot 0 cl-macro-environment))
+         (type (jez--abstract-eval type 0 cl-macro-environment)))
+    (if (and (symbolp type)
+             (symbolp slot))
+        (let ((idx (car (jez--get-slot-info type slot))))
+          (unless idx
+            (error "struct %s has no slot %s" type slot))
+          (ecase (car (get type 'cl-struct-type))
+            (vector `(aref (jez-the ,type ,inst) ,idx))
+            (list `(nth ,idx (jez-the ,type ,inst)))))        
+      orig)))
+
+(define-compiler-macro jez-set-slot-value (&whole orig type inst slot value)
+  (let* ((slot (jez--abstract-eval slot 0 cl-macro-environment))
+         (type (jez--abstract-eval type 0 cl-macro-environment)))
+    (if (and (symbolp type)
+             (symbolp slot))
+        (let ((idx (car (jez--get-slot-info type slot))))
+          (unless idx
+            (error "struct %s has no slot %s" type slot))
+          (ecase (car (get type 'cl-struct-type))
+            (vector `(setf (aref (jez-the ,type ,inst) ,idx) ,value))
+            (list `(setf (nth ,idx (jez-the ,type ,inst)) ,value))))
+      orig)))
+
+(defmacro* jez-with-slots (spec-list (type inst) &body body)
+  "Like WITH-SLOTS, but for structs."
+  (if (symbolp inst)
+      `(symbol-macrolet
+           ,(loop for spec in spec-list
+                  collect `(,spec (jez-slot-value ',type ,inst ',spec)))
+         ,@body)
+    (let ((inst-symbol (gensym "with-struct-slots")))
+      `(let ((,inst-symbol ,inst))
+         (with-jez-struct-slots
+          ,spec-list (,conc-name ,inst-symbol) ,@body)))))
+
+(put 'jez-with-slots 'lisp-indent-function 2)
+
+;;;; Purely functional structs.
 
 (defmacro* define-functional-struct (name &rest orig-slots)
   "`defstruct' specialized for pure functional data structures.
@@ -262,10 +383,6 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
        (list* ,@body ,tmp-sym))))
 
-(defun* jez--update-hash (dest src)
-  "Copy all entries in hash SRC into DEST."
-  (maphash (lambda (key value)
-             (puthash key value dest))
-           src))
+
 
 (provide 'jezebel-util)

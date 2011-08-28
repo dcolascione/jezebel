@@ -101,5 +101,27 @@ when the macro is expanded."
       (copy-and-modify-jezt-fstruct v
        :field1 (error "bleg"))))))
 
+(defstruct jezt-foo-vector a b c)
+(defstruct (jezt-foo-list (:type list)) a b c)
+
+(ert-deftest jezt-jez-slot-value-vector ()
+  (let ((val (make-jezt-foo-vector :a 1 :b 2 :c 3)))
+    (should-eql (jez-slot-value 'jezt-foo-vector val 'c) 3)
+    (setf (jez-slot-value 'jezt-foo-vector val 'c) 4)
+    (should-eql (jez-slot-value 'jezt-foo-vector val 'c) 4)))
+
+(ert-deftest jezt-jez-slot-value-list ()
+  (let ((val (make-jezt-foo-list :a 1 :b 2 :c 3)))
+    (should-eql (jez-slot-value 'jezt-foo-list val 'c) 3)
+    (setf (jez-slot-value 'jezt-foo-list val 'c) 4)
+    (should-eql (jez-slot-value 'jezt-foo-list val 'c) 4)))
+
+(ert-deftest jezt-with-struct-slots ()
+  (let ((val (make-jezt-foo-vector :a 1 :b 2 :c 3)))
+    (should-equal (jez-with-slots
+                   (a b c) (jezt-foo-vector val)
+                   (list c b a))
+                  (list 3 2 1))))
+
 
 (provide 'jezebel-util-test)
