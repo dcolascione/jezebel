@@ -205,9 +205,10 @@ return nil.  Fails to detect instances of structs with an
          (loop
           for (slot . nil) in (get struct-type 'cl-struct-slots)
           unless (eq slot 'cl-tag-slot)
-          do (princ (format "%S:\n" slot))
+          do (princ (format "(:%S\n" slot))
           and do (with-jez-indented-output 2
-                   (jez-describe-1 (jez-slot-value struct-type val slot)))))
+                   (jez-describe-1 (jez-slot-value struct-type val slot)))
+          and do (princ ")\n")))
        (princ ")\n")))
     (hash-table
      (princ "#(hash-table\n")
