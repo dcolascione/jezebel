@@ -155,6 +155,92 @@ return DEFAULT."
 
 (put 'jez-with-slots 'lisp-indent-function 2)
 
+(defun* jez-get-struct-type (value &aux tag)
+  "If value is a CL struct, return its struct symbol.  Otherwise,
+return nil.  Fails to detect instances of structs with an
+:initial-offset and structs that are not named."
+  (and (or (consp value)
+           (and (vectorp value) (> (length value) 0)))
+       (setf tag (elt value 0))
+       (symbolp tag)
+       (setf tag (symbol-name tag))
+       (> (length tag) (length "cl-struct-"))
+       (setf tag (intern-soft (substring tag
+                                         (length "cl-struct-")
+                                         (length tag))))
+       (get tag 'cl-struct-type)
+       tag))
+
+(deftype jez-struct ()
+  `(satisfies (lambda (v) (jez-get-struct-type v))))
+
+(defun* jez-indent-string (indent s)
+  "Return a string like S, except that line begins with INDENT
+  spaces.  The returned string also ends in a newline."
+
+  (with-temp-buffer
+    (let (indent-tabs-mode)
+      (insert s)
+      (indent-rigidly (point-min) (point-max) indent)
+      (goto-char (point-max))
+      (unless (eql (char-before) ?\n)
+        (insert "\n"))
+      (buffer-substring (point-min) (point-max)))))
+
+(defmacro* with-jez-indented-output (indent &body body)
+  `(princ
+    (jez-indent-string ,indent
+                       (with-output-to-string
+                         ,@body))))
+(put 'with-jez-indented-output 'lisp-indent-function 1)
+
+(defvar jez-describe-seen)
+
+(defun* jez-describe-1 (val)
+  (typecase val
+    (jez-struct
+     (let ((struct-type (jez-get-struct-type val)))
+       (princ (format "#(struct %S\n" struct-type))
+       (with-jez-indented-output 2
+         (loop
+          for (slot . nil) in (get struct-type 'cl-struct-slots)
+          unless (eq slot 'cl-tag-slot)
+          do (princ (format "%S:\n" slot))
+          and do (with-jez-indented-output 2
+                   (jez-describe-1 (jez-slot-value struct-type val slot)))))
+       (princ ")\n")))
+    (hash-table
+     (princ "#(hash-table\n")
+     (with-jez-indented-output 2
+       (maphash (lambda (item-key item-val)
+                  (with-jez-indented-output 0
+                    (jez-describe-1 item-key))
+                  (with-jez-indented-output 0
+                    (if (eq item-key item-val)
+                        (princ "#(eq key)")
+                      (jez-describe-1 item-val))))
+                val))
+     (princ ")\n"))
+    (cons
+     (if (eq (car val) 'lambda)
+         (pp val)
+       (princ "(\n")
+       (with-jez-indented-output 2
+         (loop for cons on val
+               when (eq (car cons) 'lambda)
+               do (progn
+                    (princ " . ")
+                    (pp cons)) and return nil
+               do (jez-describe-1 (car cons))))
+       (princ ")\n")))
+    (t
+     (pp val))))
+
+(defun* jez-describe (val &optional stream)
+  (let ((standard-output stream))
+    (jez-describe-1 val)
+    nil))
+
 ;;;; Purely functional structs.
 
 (defmacro* define-functional-struct (name &rest orig-slots)

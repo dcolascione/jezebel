@@ -113,7 +113,7 @@ vector given by VEC-PLACE and POS-PLACE."
     (assert (> osp 0))
     (while (not (funcall (aref os (decf osp)) state)))))
 
-(defun* jez-state-add-undo-1 (state item)
+(defun* jez-add-undo-1 (state item)
   "Add an undo record to STATE.  
 
 To backtrack, we pop the first item from STATE's or-stack and
@@ -128,16 +128,16 @@ the or-stack."
   "Add ITEMS to STATE's undo stack.  The last item will be at the
 top of the stack."
   (dolist (item items)
-    (jez-state-add-undo-1 state item)))
+    (jez-add-undo-1 state item)))
 
-(define-compiler-macro jez-state-add-undo (state &rest items)
+(define-compiler-macro jez-add-undo (state &rest items)
   `(symbol-macrolet ((os (jez-state--or-stack state))
                      (osp (jez-state--or-stack-pos state)))
      (when (<= (+ osp ,(length items)) (length os))
        (setf os (jez--double-vector os)))
      ,@(loop for item in items
              collect `(aset os (incf osp) ,item))))
-(put 'jez-state-add-undo 'lisp-indent-function 1)
+(put 'jez-add-undo 'lisp-indent-function 1)
 
 (defun* jez-state-pop-undo (state)
   (jez--pop-vector (jez-state--or-stack state)
@@ -150,16 +150,17 @@ top of the stack."
 
 (defun* jez-add-choice-point (state state-sym)
   "Add a choice point to STATE."
-  
-  (jez-state-add-undo state
+  (check-type state-sym symbol)
+  (jez-add-undo state
     (if state-sym
         (cons state-sym (jez-state--and-stack state))
         (jez-state--and-stack state))
     (point)
     #'jez--undo-handle-choice-point))
 
-(defun* jez-do-next (state next-state)
+(defun* jez-do-next (state state-sym)
   "Add NEXT-STATE to STATE and-stack."
+  (check-type state-sym symbol)
   (push state-sym (jez-state--and-stack state)))
 
 (defun* jez-state-finish-current (state)
@@ -282,7 +283,7 @@ not previously been compiled, do that during this call."
 (defun* jez-sequence--compile (irn parser self)
   `(lambda (state)
      ,@(loop for irn in (reverse (jez-sequence--pstates irn))
-             collect `(jez-do-next state ,(jez-irn-compile irn parser)))))
+             collect `(jez-do-next state ',(jez-irn-compile irn parser)))))
 
 (defun* jez--make-sequence (parser states)
   "Make a jez-sequence instance."
@@ -316,11 +317,11 @@ not previously been compiled, do that during this call."
            ;; backtrack to an ordered choice of the rest of our
            ;; states.
            `(lambda (state)
-              (jez-do-next state ,(jez-irn-compile (car choices) parser))
+              (jez-do-next state ',(jez-irn-compile (car choices) parser))
               (jez-add-choice-point state
-                                    ,(jez-irn-compile
-                                      (jez--make-cut parser (cdr choices))
-                                      parser))
+                                    ',(jez-irn-compile
+                                       (jez--make-cut parser (cdr choices))
+                                       parser))
               )))))
 
 (defun* jez--make-cut (parser states)
@@ -344,7 +345,7 @@ not previously been compiled, do that during this call."
      ;; trying to repeat.  If successful, we return to this state and
      ;; do it over and over again.
      (jez-do-next state self)
-     (jez-do-next state (jez-repeat--state irn))
+     (jez-do-next state ',(jez-repeat--state irn))
 
      ;; If we weren't successful, return to whatever was next on the
      ;; and-stack.

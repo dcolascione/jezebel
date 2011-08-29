@@ -67,12 +67,15 @@ Compile the rule if necessary."
 
        ;; We weren't able to expand the rule further. It is either a
        ;; primitive or not really a rule.
-       (or (apply (or (gethash (car-safe rd) primitives)
-                      (error "invalid rule %S: no primitive for %S"
-                             rd (car-safe rd)))
-                  env (rest rd))
-           (error "primitive handler unexpectedly returned nil: %S"
-                  (gethash (car-safe rd) primitives)))))))
+       (puthash
+        rd
+        (or (apply (or (gethash (car-safe rd) primitives)
+                       (error "invalid rule %S: no primitive for %S"
+                              rd (car-safe rd)))
+                   env (rest rd))
+            (error "primitive handler unexpectedly returned nil: %S"
+                   (gethash (car-safe rd) primitives)))
+        expansion-cache)))))
 
 (defun* jez--grammar-:include (parser other-grammar)
   (jez--slurp-grammar other-grammar parser))
@@ -187,7 +190,7 @@ parsing; by default, we begin with the rule called `top'."
   (jez-with-slots (parser) (jez-environment env)
     (jez--make-sequence
      parser
-     (loop for char in (mapconcat #'identity terms "")
+     (loop for char across (mapconcat #'identity terms "")
            collect (jez--make-char parser char)))))
 
 (defconst jez-root-grammar
