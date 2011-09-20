@@ -128,9 +128,8 @@ parsing; by default, we begin with the rule called `top'."
   (let* ((parser (jez--slurp-grammar grammar (jez--make-parser)))
          (env (jez--make-environment :parser parser))
          (top-irn (jez-compile-rd env top-rd)))
-    
-    ;; TODO: implement optimization
-    ;; (jez-optimize-graph parser top-irn)
+
+    (setf top-irn (jez--optimize parser top-irn))
 
     ;; Compile the IR nodes to real lisp functions.
     (setf (jez-parser--initial-state parser)

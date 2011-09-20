@@ -38,8 +38,8 @@ create jez-state that, in turn, parse buffers."
   ;; Holds initial state symbol for this parser.
   (initial-state nil)
 
-  ;; Maps rule invocations to their resulting state symbols. Every
-  ;; value in this hash is also a value in states.
+  ;; Maps rule invocations to their resulting IRN nodes. Every value
+  ;; in this hash is also a value in states.
   (expansion-cache (make-hash-table :test 'equal))
 
   ;; Maps IR nodes to IR nodes so that we always return EQ-identical
@@ -337,15 +337,16 @@ not previously been compiled, do that during this call."
             (:include jez-irn)
             (:copier nil))
   "IR node that matches a given state zero or more times."
-  (state nil :read-only t :type jez-irn))
+  (pstate nil :read-only t :type jez-irn))
 
 (defun jez-repeat--compile (irn parser self)
   `(lambda (state)
      ;; We first pop the and-stack and try to match the thing we're
      ;; trying to repeat.  If successful, we return to this state and
      ;; do it over and over again.
-     (jez-do-next state self)
-     (jez-do-next state ',(jez-repeat--state irn))
+     (jez-do-next state ',self)
+     (jez-do-next state ',(jez-irn-compile (jez-repeat--pstate irn)
+                                           parser))
 
      ;; If we weren't successful, return to whatever was next on the
      ;; and-stack.
@@ -356,7 +357,7 @@ not previously been compiled, do that during this call."
   (jez--new-pstate parser
                    (jez--%make-repeat
                     :compile-func #'jez-repeat--compile
-                    :state (jez-the jez-irn state))))
+                    :pstate (jez-the jez-irn state))))
 
 (defstruct (jez-char
             (:conc-name jez-char--)
@@ -368,7 +369,7 @@ not previously been compiled, do that during this call."
 
 (defun* jez-char--compile (irn parser self)
   `(lambda (state)
-     (if (eql (char-after) (jez-char--char))
+     (if (eql (char-after) ,(jez-char--char irn))
          (forward-char)
        (jez-backtrack state))))
 
@@ -378,5 +379,83 @@ not previously been compiled, do that during this call."
                    (jez--%make-char
                     :compile-func #'jez-char--compile
                     :char (jez-the character char))))
+
+(defstruct (jez-end-state
+            (:conc-name jez-end-state--)
+            (:constructor jez--%make-end-state)
+            (:include jez-irn)
+            (:copier nil))
+  "IR node that terminates a parse by resolving to itself
+endlessly."
+  (result nil :read-only t :type boolean))
+
+(defun* jez-end-state--compile (irn parser self)
+  `(lambda (state)
+     (jez-do-next state ',self)
+     ',(jez-end-state--result irn)))
+
+(defun* jez--make-end-state (parser result)
+  "Make a new IR node for an end state."
+  (assert (memq result '(done fail)))
+  (jez--new-pstate parser
+                   (jez--%make-end-state
+                    :compile-func #'jez-end-state--compile
+                    :result result)))
+
+;;
+;; Optimizer
+;;
+
+(defun* jez--optimize (parser irn &optional seen)
+  "Optmize IRN, which belongs to PARSER.  Return a new irn to use
+in its place."
+
+  ;; seen holds references to nodes we've already optimized,
+  ;; allowing us to avoid recursing endlessly when the parse graph
+  ;; contains cycles.
+
+  (let ((new-irn irn))
+  
+    (unless seen
+      (setf seen (make-hash-table :test 'eq)))
+
+    )
+  )
+
+;;
+;; Parsing
+;;
+
+(defun* jez-begin-parse (parser)
+  "Create a new parse state."
+  (let ((state (jez--make-state :parser parser
+                                :reach (point-min))))
+
+    ;; If we try to backtrack past a choice point, there is no
+    ;; possible way to continue.  Arrange to transition to a state
+    ;; that fails forever in this case.
+    (jez-add-choice-point state
+                          (jez-irn-compile
+                           (jez--make-end-state parser 'fail)
+                           parser))
+
+    ;; After we're successfully parsed everything, transition to a
+    ;; state that succeeds forever.
+    (jez-do-next state (jez-irn-compile
+                        (jez--make-end-state parser 'done)
+                        parser))
+
+    ;; Begin parsing in the initial state.
+    (jez-do-next state (jez-parser--initial-state parser))
+
+    ;; Parser is now ready for use.
+    state))
+
+(defun* jez-advance (state)
+  "Update parse state STATE.  Return the symbol `done' if we are
+at the end of input, `fail' if we are at an error state, or nil
+otherwise."
+  (funcall (pop (jez-state--and-stack state))
+           state))
 
 (provide 'jezebel-engine)

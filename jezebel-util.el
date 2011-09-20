@@ -155,7 +155,7 @@ return DEFAULT."
 
 (put 'jez-with-slots 'lisp-indent-function 2)
 
-(defun* jez-get-struct-type (value &aux tag)
+(defun* jez-struct-type (value &aux tag)
   "If value is a CL struct, return its struct symbol.  Otherwise,
 return nil.  Fails to detect instances of structs with an
 :initial-offset and structs that are not named."
@@ -172,7 +172,7 @@ return nil.  Fails to detect instances of structs with an
        tag))
 
 (deftype jez-struct ()
-  `(satisfies (lambda (v) (jez-get-struct-type v))))
+  `(satisfies (lambda (v) (jez-struct-type v))))
 
 (defun* jez-indent-string (indent s)
   "Return a string like S, except that line begins with INDENT
@@ -199,7 +199,7 @@ return nil.  Fails to detect instances of structs with an
 (defun* jez-describe-1 (val)
   (typecase val
     (jez-struct
-     (let ((struct-type (jez-get-struct-type val)))
+     (let ((struct-type (jez-struct-type val)))
        (princ (format "#(struct %S\n" struct-type))
        (with-jez-indented-output 2
          (loop
@@ -232,7 +232,8 @@ return nil.  Fails to detect instances of structs with an
                do (progn
                     (princ " . ")
                     (pp cons)) and return nil
-               do (jez-describe-1 (car cons))))
+                    do (with-jez-indented-output 0
+                         (jez-describe-1 (car cons)))))
        (princ ")\n")))
     (t
      (pp val))))
