@@ -1,3 +1,8 @@
+;;
+;; High-level tests for Jezebel.  Please write tests such that they
+;; can be evaluated using C-c C-e.
+;;
+
 (require 'jezebel-test-util)
 (require 'jezebel)
 
@@ -163,7 +168,7 @@ no such node exists in PARSER."
                  (fail nil)
                  (t t)))
         (incf stepno))
-      (and success (eobp)))))
+      success)))
 
 (ert-deftest jezt-compile-grammar ()
   (let* ((parser (jez-compile jezt-simple-grammar)))
@@ -185,13 +190,23 @@ no such node exists in PARSER."
      (jezt-try-parse grammar "abc"))
     (should
      (jezt-try-parse grammar "abbbbbbc"))
+    (should-not
+     (jezt-try-parse grammar "abbbbbb"))
     (should
      (jezt-try-parse grammar "ac"))))
+
+(ert-deftest jezt-alternation-parse ()
+  (let ((grammar '((:include jez-root-grammar)
+                   (top "a" (/ "b" "c") "d"))))
+    (should
+     (jezt-try-parse grammar "abd"))
+    (should
+     (jezt-try-parse grammar "acd"))))
 
 (defun foo ()
   (interactive)
   (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (* "b") "c"))))
-    (jezt-try-parse grammar "abc" t)))
+                   (top "a" (/ "b" "c") "d"))))
+    (jezt-try-parse grammar "acd" t)))
 
 (provide 'jezebel-test)

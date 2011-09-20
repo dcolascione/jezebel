@@ -119,7 +119,7 @@ Compile the rule if necessary."
            (cdr clause)))
   parser)
 
-(defun* jez-compile (grammar &optional (top-rd 'top))
+(defun* jez-compile (grammar &optional (top-rd '(: top eob)))
   "Compiles GRAMMAR into a jez-parser. Return the new parser instance.
 TOP-RD denotes with which the generated parser will begin
 parsing; by default, we begin with the rule called `top'."
@@ -180,7 +180,7 @@ parsing; by default, we begin with the rule called `top'."
      parser
      (apply #'jez--primitive-sequence env terms))))
 
-(defun* jez--primitive-cut (env terms)
+(defun* jez--primitive-cut (env &rest terms)
   (jez--make-cut (jez-environment--parser env)
                  (loop for term in terms
                               collect (jez-compile-rd env term))))
@@ -192,6 +192,11 @@ parsing; by default, we begin with the rule called `top'."
      (loop for char across (mapconcat #'identity terms "")
            collect (jez--make-char parser char)))))
 
+(defun* jez--primitive-eob (env &rest terms)
+  (when terms
+    (error "eob takes no arguments"))
+  (jez--make-predicate parser `(eobp)))
+
 (defconst jez-root-grammar
   '(;; Fundamental combinators.
     (:primitive : jez--primitive-sequence)
@@ -201,6 +206,11 @@ parsing; by default, we begin with the rule called `top'."
     ;; Literal handling (note: the compiler automagically transforms
     ;; an RD X into (literal X) if X is a string or (literal "X") if X
     ;; is a character.
-    (:primitive literal jez--primitive-literal)))
+    (:primitive literal jez--primitive-literal)
+
+    ;; Built-in predicates
+    (:primitive eob jez--primitive-eob)
+
+    ))
 
 (provide 'jezebel-grammar)

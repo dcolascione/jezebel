@@ -313,18 +313,18 @@ not previously been compiled, do that during this call."
            ;; backtrack to an ordered choice of the rest of our
            ;; states.
            `(lambda (state)
-              (jez-do-next state ',(jez-irn-compile (car choices) parser))
               (jez-add-choice-point state
                                     ',(jez-irn-compile
                                        (jez--make-cut parser (cdr choices))
                                        parser))
+              (jez-do-next state ',(jez-irn-compile (car choices) parser))
               )))))
 
 (defun* jez--make-cut (parser states)
   "Make a jez-cut instance."
   (jez--%make-cut
    :compile-func #'jez-cut--compile
-   :pstates (jez-the jez-irn-list states)))
+   :choices (jez-the jez-irn-list states)))
 
 (define-functional-struct
   (jez-repeat
@@ -397,6 +397,26 @@ endlessly."
   (jez--%make-end-state
    :compile-func #'jez-end-state--compile
    :result result))
+
+(define-functional-struct
+  (jez-predicate
+   (:conc-name jez-predicate--)
+   (:constructor jez--%make-predicate)
+   (:include jez-irn)
+   (:copier nil))
+  "IR that matches some predicate function."
+  (predicate nil :read-only t :type function))
+
+(defun* jez-predicate--compile (irn parser self)
+  `(lambda (state)
+     (unless ,(jez-predicate--predicate irn)
+       (jez-backtrack state))))
+
+(defun* jez--make-predicate (parser predicate)
+  "Make a new IR node for end-of-buffer."
+  (jez--%make-predicate
+   :compile-func #'jez-predicate--compile
+   :predicate predicate))
 
 ;;
 ;; Optimizer
