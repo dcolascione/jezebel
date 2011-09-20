@@ -52,11 +52,11 @@ Compile the rule if necessary."
   ;; property, then return the state.
 
   (jez-with-slots (parser) (jez-environment env)
-    (jez-with-slots (expansion-cache primitives) (jez-parser parser)
+    (jez-with-slots (expansions primitives) (jez-parser parser)
   
       (or
        ;; If we've already compiled this rule, return its state.
-       (gethash rd expansion-cache)
+       (gethash rd expansions)
 
        ;; Check whether this rule definition can be expanded to a more
        ;; fundamental rule definition. If so, use the IRN for that
@@ -75,7 +75,7 @@ Compile the rule if necessary."
                    env (rest rd))
             (error "primitive handler unexpectedly returned nil: %S"
                    (gethash (car-safe rd) primitives)))
-        expansion-cache)))))
+        expansions)))))
 
 (defun* jez--grammar-:include (parser other-grammar)
   (jez--slurp-grammar other-grammar parser))

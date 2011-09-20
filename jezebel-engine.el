@@ -38,14 +38,11 @@ create jez-state that, in turn, parse buffers."
   ;; Holds initial state symbol for this parser.
   (initial-state nil)
 
-  ;; Maps rule invocations to their resulting IRN nodes. Every value
-  ;; in this hash is also a value in states.
-  (expansion-cache (make-hash-table :test 'equal))
+  ;; Maps rule primitive expressions to their resulting IR nodes.
+  (expansions (make-hash-table :test 'equal))
 
-  ;; Maps IR nodes to IR nodes so that we always return EQ-identical
-  ;; IR nodes for EQUAL-identical IR nodes (breaking infinite
-  ;; recursion).
-  (pstates (make-hash-table :test 'equal)))
+  ;; Maps IR nodes to their state symbols
+  (node-names (make-hash-table :weakness 'value)))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
@@ -61,7 +58,7 @@ create jez-state that, in turn, parse buffers."
   (reach 0)
 
   ;; Stack states to enter when backtracking
-  (or-stack (make-vector 1024 nil))
+  (or-stack (make-vector 256 nil))
   (or-stack-pos 0)
 
   ;; Stack of states to enter when successful
@@ -173,7 +170,9 @@ top of the stack."
 ;;; When we compile a grammar using JEZ-COMPILE, we first transform
 ;;; the input into a graph of jez-irn instances.  Each node represents
 ;;; a possible state our parser (or more specifically, its jez-state
-;;; instance) may take on during parsing.  Each edge is a transition.
+;;; instance) may take on during parsing.  Each potential state
+;;; transition is an edge in this graph.
+;;;
 ;;; Each node is associated with a Lisp function that, when called
 ;;; with a given jez-state instance, selects on appropriate transition
 ;;; and updates the jez-state accordingly.
@@ -236,47 +235,40 @@ top of the stack."
 ;;; after a modification.
 ;;;
 
-(defstruct (jez-irn
-            (:conc-name jez-irn--)
-            (:constructor nil)
-            (:copier nil))
+(define-functional-struct
+  (jez-irn
+   (:conc-name jez-irn--)
+   (:constructor nil)
+   (:copier nil))
   "Abstract base for an IR node in a parse-state graph."
   
   ;; Function that builds a parse function for this IRN.  The return
   ;; value must be a lambda of one argument, which, when called with
   ;; an existing jez-state instance, returns a new jez-state.
-  (compile-func nil :read-only t :type function)
-
-  ;; Unique symbol for this state; initially nil; symbol created and
-  ;; assign here by JEZ-IRN-COMPILE.  If this slot is non-nil, the
-  ;; function slot of its value is the state function.
-  (symbol nil :type symbol))
+  (compile-func nil :read-only t :type function))
 
 (deftype jez-irn-list ()
   '(jez-list-of-type jez-irn))
-
-(defun* jez--new-pstate (parser candidate)
-  (check-type (jez-irn--compile-func candidate) function)
-  (jez-with-slots (pstates) (jez-parser parser)
-    (or (gethash candidate pstates)
-        (puthash candidate candidate pstates))))
 
 (defun* jez-irn-compile (irn parser)
   "Return the state symbol for IRN.  The returned symbol's
 function slot contains the symbol function for IRN.  If IRN has
 not previously been compiled, do that during this call."
-  (jez-with-slots (symbol compile-func) (jez-irn irn)
-    (unless symbol
-      (setf symbol (gensym "jez-irn"))
-      (fset symbol (funcall compile-func irn parser symbol)))
-    (assert (fboundp symbol))
-    symbol))
+  (check-type irn jez-irn)
+  (jez-with-slots (compile-func) (jez-irn irn)
+    (jez-with-slots (node-names) (jez-parser parser)
+      (or (gethash irn node-names)
+          (let ((name (gensym "jez-irn")))
+            (puthash irn name node-names)
+            (fset name (funcall compile-func irn parser name))
+            name)))))
 
-(defstruct (jez-sequence
-            (:conc-name jez-sequence--)
-            (:constructor jez--%make-sequence)
-            (:include jez-irn)
-            (:copier nil))
+(define-functional-struct
+  (jez-sequence
+   (:conc-name jez-sequence--)
+   (:constructor jez--%make-sequence)
+   (:include jez-irn)
+   (:copier nil))
   "IR node that matches a sequence of states."
   (pstates nil :read-only t :type jez-irn-list))
 
@@ -287,16 +279,20 @@ not previously been compiled, do that during this call."
 
 (defun* jez--make-sequence (parser states)
   "Make a jez-sequence instance."
-  (jez--new-pstate parser
-                   (jez--%make-sequence
-                    :compile-func #'jez-sequence--compile
-                    :pstates (jez-the jez-irn-list states))))
+  (cond ((and (car states)
+              (not (cdr states)))
+         (car states))
+        (t
+         (jez--%make-sequence
+          :compile-func #'jez-sequence--compile
+          :pstates (jez-the jez-irn-list states)))))
 
-(defstruct (jez-cut
-            (:conc-name jez-cut--)
-            (:constructor jez--%make-cut)
-            (:include jez-irn)
-            (:copier nil))
+(define-functional-struct
+  (jez-cut
+   (:conc-name jez-cut--)
+   (:constructor jez--%make-cut)
+   (:include jez-irn)
+   (:copier nil))
   "IR node that tries matching each in a sequence of states."
   (choices nil :read-only t :type jez-irn-list))
 
@@ -307,8 +303,8 @@ not previously been compiled, do that during this call."
            ;; anything.  (This state exists to make sure that there's
            ;; always a choice point saved when an ordered choice
            ;; succeeds, allowing users to use backtracking control to
-           ;; kill it in all cases instead of making them create a
-           ;; special case for the last choice point.)
+           ;; kill it in all cases and freeing them from having to
+           ;; make a special case out of the last choice point.)
            `(lambda (state)
               (jez-backtrack state)
               nil))
@@ -326,44 +322,45 @@ not previously been compiled, do that during this call."
 
 (defun* jez--make-cut (parser states)
   "Make a jez-cut instance."
-  (jez--new-pstate parser
-                   (jez--%make-cut
-                    :compile-func #'jez-cut--compile
-                    :pstates (jez-the jez-irn-list states))))
+  (jez--%make-cut
+   :compile-func #'jez-cut--compile
+   :pstates (jez-the jez-irn-list states)))
 
-(defstruct (jez-repeat
-            (:conc-name jez-repeat--)
-            (:constructor jez--%make-repeat)
-            (:include jez-irn)
-            (:copier nil))
+(define-functional-struct
+  (jez-repeat
+   (:conc-name jez-repeat--)
+   (:constructor jez--%make-repeat)
+   (:include jez-irn)
+   (:copier nil))
   "IR node that matches a given state zero or more times."
   (pstate nil :read-only t :type jez-irn))
 
 (defun jez-repeat--compile (irn parser self)
   `(lambda (state)
+     ;; If we're not successful below, return to whatever is next on
+     ;; the and-stack. (N.B. matching zero elements counts as
+     ;; success).
+     (jez-add-choice-point state nil)
+
      ;; We first pop the and-stack and try to match the thing we're
      ;; trying to repeat.  If successful, we return to this state and
-     ;; do it over and over again.
+     ;; match over and over again.
      (jez-do-next state ',self)
      (jez-do-next state ',(jez-irn-compile (jez-repeat--pstate irn)
-                                           parser))
-
-     ;; If we weren't successful, return to whatever was next on the
-     ;; and-stack.
-     (jez-add-choice-point state nil)))
+                                           parser))))
 
 (defun* jez--make-repeat (parser state)
   "Make an IR node matching STATE zero or more times."
-  (jez--new-pstate parser
-                   (jez--%make-repeat
-                    :compile-func #'jez-repeat--compile
-                    :pstate (jez-the jez-irn state))))
+  (jez--%make-repeat
+   :compile-func #'jez-repeat--compile
+   :pstate (jez-the jez-irn state)))
 
-(defstruct (jez-char
-            (:conc-name jez-char--)
-            (:constructor jez--%make-char)
-            (:include jez-irn)
-            (:copier nil))
+(define-functional-struct
+  (jez-char
+   (:conc-name jez-char--)
+   (:constructor jez--%make-char)
+   (:include jez-irn)
+   (:copier nil))
   "IR node that matches a single character in the buffer."
   (char nil :read-only t :type character))
 
@@ -375,16 +372,16 @@ not previously been compiled, do that during this call."
 
 (defun* jez--make-char (parser char)
   "Make an IR node matching a character."
-  (jez--new-pstate parser
-                   (jez--%make-char
-                    :compile-func #'jez-char--compile
-                    :char (jez-the character char))))
+  (jez--%make-char
+   :compile-func #'jez-char--compile
+   :char (jez-the character char)))
 
-(defstruct (jez-end-state
-            (:conc-name jez-end-state--)
-            (:constructor jez--%make-end-state)
-            (:include jez-irn)
-            (:copier nil))
+(define-functional-struct
+  (jez-end-state
+   (:conc-name jez-end-state--)
+   (:constructor jez--%make-end-state)
+   (:include jez-irn)
+   (:copier nil))
   "IR node that terminates a parse by resolving to itself
 endlessly."
   (result nil :read-only t :type boolean))
@@ -397,10 +394,9 @@ endlessly."
 (defun* jez--make-end-state (parser result)
   "Make a new IR node for an end state."
   (assert (memq result '(done fail)))
-  (jez--new-pstate parser
-                   (jez--%make-end-state
-                    :compile-func #'jez-end-state--compile
-                    :result result)))
+  (jez--%make-end-state
+   :compile-func #'jez-end-state--compile
+   :result result))
 
 ;;
 ;; Optimizer
@@ -419,8 +415,7 @@ in its place."
     (unless seen
       (setf seen (make-hash-table :test 'eq)))
 
-    )
-  )
+    new-irn))
 
 ;;
 ;; Parsing
@@ -455,7 +450,8 @@ in its place."
   "Update parse state STATE.  Return the symbol `done' if we are
 at the end of input, `fail' if we are at an error state, or nil
 otherwise."
-  (funcall (pop (jez-state--and-stack state))
-           state))
+  (jez-with-slots (and-stack) (jez-state state)
+    (assert and-stack)
+    (funcall (pop and-stack) state)))
 
 (provide 'jezebel-engine)

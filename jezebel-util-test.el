@@ -102,7 +102,7 @@ when the macro is expanded."
        :field1 (error "bleg"))))))
 
 (defstruct jezt-foo-vector a b c)
-(defstruct (jezt-foo-list (:type list)) a b c)
+(defstruct (jezt-foo-list (:type list) (:named)) a b c)
 
 (ert-deftest jezt-jez-slot-value-vector ()
   (let ((val (make-jezt-foo-vector :a 1 :b 2 :c 3)))
@@ -122,6 +122,14 @@ when the macro is expanded."
                    (a b c) (jezt-foo-vector val)
                    (list c b a))
                   (list 3 2 1))))
+
+(ert-deftest jezt-nested-with-struct-slots ()
+  (let ((val (make-jezt-foo-vector :a 1 :b 2 :c 3))
+        (val2 (make-jezt-foo-list :a 4 :b 5 :c 6)))
+    (jez-with-slots (a) (jezt-foo-vector val)
+      (jez-with-slots (b) (jezt-foo-list val2)
+        (should-equal (list a b)
+                      (list 1 5))))))
 
 
 (provide 'jezebel-util-test)

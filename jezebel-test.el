@@ -11,54 +11,79 @@
          (jez--slurp-grammar grammar (jez--make-parser))
          args))
 
-(defun* jezt-find-primitive (parser state-sym)
-  (loop for state-prim being the hash-keys of
-        (jez-parser--expansion-cache parser) 
-        using (hash-values irn)
-        for irn-state-sym = (jez-irn--symbol irn)
-        when (eq irn-state-sym state-sym)
-        return state-prim))
+(defun* jezt-hash-rmap (value
+                        table
+                        &optional (test #'eq)
+                        &aux result)
+  "Find a key in TABLE mapping to VALUE."
+  (maphash (lambda (hkey hvalue)
+             (when (funcall test hvalue value)
+               (setf result hkey)))
+           table)
+  result)
 
-(defun* jezt-find-irn (parse state-sym)
-  (loop for state-prim being the hash-keys of
-        (jez-parser--pstates parser) 
-        using (hash-values irn)
-        for irn-state-sym = (jez-irn--symbol irn)
-        when (eq irn-state-sym state-sym)
-        return irn))
+(defun* jezt-find-irn (parser name)
+  "Find the IR node named NAME.  Return nil if 
+no such node exists in PARSER."
+  (jezt-hash-rmap name
+                  (jez-parser--node-names parser)))
+
+(defun* jezt-find-primitive (parser name)
+  "Find the primitive that compiled down to NAME."
+  (let ((irn (if (jez-irn-p name)
+                 irn
+               (jezt-find-irn parser name))))
+    (jezt-hash-rmap irn (jez-parser--expansions parser))))
 
 (defun* jezt-describe-irn (parser irn)
   (let* ((type (jez-struct-type irn))
-         (type-name
-          (and (symbolp type)
-               (if (and type
-                        (string-match "^jez-\\(.*\\)$"
-                                      (symbol-name type))
-                        (jez-irn-p irn))
-                   (match-string 1 (symbol-name type))
-                 (symbol-name type)))))
-    (cond (type-name
-           (princ (format "%s" type-name))
-           (case type
-             (jez-char
-              (princ
-               (format " %S" (char-to-string
-                              (jez-char--char irn)))))))
-          (t
-           (princ (format "%S" irn))))))
+         (type-name (progn (string-match "^jez-\\(.*\\)$"
+                                         (symbol-name type))
+                           (match-string 1 (symbol-name type))))
+         (primitive (jezt-find-primitive parser irn)))
 
-(defun* jezt-describe-state (state stepno)
-  (princ (format "step %d\n" stepno))
-  (princ "and-stack:\n")
-  (loop with parser = (jez-state--parser state)
-        for state-sym in (jez-state--and-stack state)
-        for i upfrom 0
-        for irn = (jezt-find-irn parser state-sym)
-        for prim = (jezt-find-primitive parser state-sym)
-        do (progn
-             (princ (format " %2d: " i))
-             (jezt-describe-irn parser irn)
-             (princ "\n"))))
+    (princ (format "%s%s" type (if primitive
+                                   (format " %S" primitive)
+                                 "")))
+    (case type
+      (jez-char (princ
+                 (format " char:%S" (char-to-string
+                                     (jez-char--char irn)))))
+      (jez-end-state (princ
+                      (format " result:%S"
+                              (jez-end-state--result irn)))))))
+
+(defun* jezt-describe-stackent (parser val)
+  (let (irn)
+    (cond ((and (symbolp val)
+                (fboundp val)
+                (string-match "^jez-irn" (symbol-name val))
+                (setf irn (jezt-find-irn parser val)))
+           (jezt-describe-irn parser irn))
+          (t
+           (prin1 val)))))
+
+(defun* jezt-describe-state (state stepno point)
+  (princ (format "step %d point:%d\n" stepno point))
+  (jez-with-slots (parser and-stack or-stack or-stack-pos)
+      (jez-state state)
+    
+    (princ (format "and-stack:%S\n" and-stack))
+    (loop for val in and-stack
+          for i upfrom 0
+          do (progn
+               (princ (format " %2d: " i))
+               (jezt-describe-stackent parser val)
+               (princ "\n")))
+
+    (princ "\nor-stack:\n")
+
+    (loop for i from (1- or-stack-pos) downto 0
+          for val = (aref or-stack i)
+          do (progn
+               (princ (format " %2d: " i))
+               (jezt-describe-stackent parser val)
+               (princ "\n")))))
 
 (defconst jezt-parse-debug-keymap
   (let ((keymap (make-sparse-keymap)))
@@ -88,46 +113,51 @@
            (state (jez-begin-parse parser))
            (stepno 0)
            debug-buf
-           success)
+           success
+           point)
 
       (when debug
-        (setf debug-buf (get-buffer-create "*jdebug*")))
+        (setf debug-buf (get-buffer-create "*jdebug*"))
+        (select-window (get-buffer-window "*jezt*" 'visible)))
       
       (while (progn
                (when debug
+                 (setf point (point))
                  (with-current-buffer debug-buf
                    (delete-region (point-min) (point-max))
                    (let ((standard-output debug-buf))
-                     (jezt-describe-state state stepno)))
+                     (jezt-describe-state state stepno point)))
                  ;; Custom little command loop we use to prompt the
                  ;; user at each step.
-                 (save-excursion
-                   (save-restriction
-                     (while
-                         (let* ((key (read-key-sequence-vector
-                                      (let ((overriding-local-map
-                                             jezt-parse-debug-keymap))
-                                        (substitute-command-keys
-                                         jezt-debug-prompt))))
-                                (binding (lookup-key
-                                          jezt-parse-debug-keymap
-                                          key)))
-                           (cond ((eq binding 'step)
-                                  nil)
-                                 ((eq binding 'go)
-                                  (setf debug nil)
-                                  nil)
-                                 ((commandp binding t)
-                                  (call-interactively binding nil key)
-                                  (when (eq binding 'eval-expression)
-                                    (sit-for 1))
-                                  t)
-                                 (t
-                                  (message "No binding for %s"
-                                           (key-description key))
-                                  (beep)
-                                  (sit-for 1)
-                                  t)))))))
+                 (while
+                     (let* ((key
+                             (with-temp-message
+                                 (let ((overriding-local-map
+                                        jezt-parse-debug-keymap))
+                                   (substitute-command-keys
+                                    jezt-debug-prompt))
+                               (read-key-sequence-vector nil)))
+                            (binding (lookup-key
+                                      jezt-parse-debug-keymap
+                                      key)))
+                       (cond ((eq binding 'step)
+                              nil)
+                             ((eq binding 'go)
+                              (setf debug nil)
+                              nil)
+                             ((commandp binding t)
+                              (let* ((parser (jez-state--parser state))
+                                     (and-stack (jez-state--and-stack state)))
+                                (call-interactively binding nil key))
+                              (when (eq binding 'eval-expression)
+                                (sit-for 10))
+                              t)
+                             (t
+                              (message "No binding for %s"
+                                       (key-description key))
+                              (beep)
+                              (sit-for 1)
+                              t)))))
                (case (jez-advance state)
                  (done (setf success t) nil)
                  (fail nil)
@@ -151,7 +181,12 @@
 (ert-deftest jezt-repetition-parse ()
   (let ((grammar '((:include jez-root-grammar)
                    (top "a" (* "b") "c"))))
-    (jezt-try-parse grammar "abc")))
+    (should
+     (jezt-try-parse grammar "abc"))
+    (should
+     (jezt-try-parse grammar "abbbbbbc"))
+    (should
+     (jezt-try-parse grammar "ac"))))
 
 (defun foo ()
   (interactive)
