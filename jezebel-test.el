@@ -195,18 +195,22 @@ no such node exists in PARSER."
     (should
      (jezt-try-parse grammar "ac"))))
 
-(ert-deftest jezt-alternation-parse ()
+(ert-deftest jezt-ochoice-parse ()
   (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (/ "b" "c") "d"))))
+                   (top "a" (/ "b" "c" "x") "d"))))
     (should
      (jezt-try-parse grammar "abd"))
+    (should-not
+     (jezt-try-parse grammar "ad"))
     (should
-     (jezt-try-parse grammar "acd"))))
+     (jezt-try-parse grammar "acd"))
+    (should-not
+     (jezt-try-parse grammar "ac"))))
 
 (defun foo ()
   (interactive)
   (let ((grammar '((:include jez-root-grammar)
                    (top "a" (/ "b" "c") "d"))))
-    (jezt-try-parse grammar "acd" t)))
+    (jezt-try-parse grammar "ad")))
 
 (provide 'jezebel-test)

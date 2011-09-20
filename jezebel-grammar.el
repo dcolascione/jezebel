@@ -180,8 +180,8 @@ parsing; by default, we begin with the rule called `top'."
      parser
      (apply #'jez--primitive-sequence env terms))))
 
-(defun* jez--primitive-cut (env &rest terms)
-  (jez--make-cut (jez-environment--parser env)
+(defun* jez--primitive-ochoice (env &rest terms)
+  (jez--make-ochoice (jez-environment--parser env)
                  (loop for term in terms
                               collect (jez-compile-rd env term))))
 
@@ -201,7 +201,7 @@ parsing; by default, we begin with the rule called `top'."
   '(;; Fundamental combinators.
     (:primitive : jez--primitive-sequence)
     (:primitive * jez--primitive-repeat)
-    (:primitive / jez--primitive-cut)
+    (:primitive / jez--primitive-ochoice)
     
     ;; Literal handling (note: the compiler automagically transforms
     ;; an RD X into (literal X) if X is a string or (literal "X") if X

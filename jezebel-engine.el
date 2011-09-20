@@ -288,16 +288,16 @@ not previously been compiled, do that during this call."
           :pstates (jez-the jez-irn-list states)))))
 
 (define-functional-struct
-  (jez-cut
-   (:conc-name jez-cut--)
-   (:constructor jez--%make-cut)
+  (jez-ochoice
+   (:conc-name jez-ochoice--)
+   (:constructor jez--%make-ochoice)
    (:include jez-irn)
    (:copier nil))
   "IR node that tries matching each in a sequence of states."
   (choices nil :read-only t :type jez-irn-list))
 
-(defun* jez-cut--compile (irn parser self)
-  (jez-with-slots (choices) (jez-cut irn)
+(defun* jez-ochoice--compile (irn parser self)
+  (jez-with-slots (choices) (jez-ochoice irn)
     (cond ((null choices)
            ;; Base case: always backtrack since we didn't match
            ;; anything.  (This state exists to make sure that there's
@@ -315,15 +315,15 @@ not previously been compiled, do that during this call."
            `(lambda (state)
               (jez-add-choice-point state
                                     ',(jez-irn-compile
-                                       (jez--make-cut parser (cdr choices))
+                                       (jez--make-ochoice parser (cdr choices))
                                        parser))
               (jez-do-next state ',(jez-irn-compile (car choices) parser))
               )))))
 
-(defun* jez--make-cut (parser states)
-  "Make a jez-cut instance."
-  (jez--%make-cut
-   :compile-func #'jez-cut--compile
+(defun* jez--make-ochoice (parser states)
+  "Make a jez-ochoice instance."
+  (jez--%make-ochoice
+   :compile-func #'jez-ochoice--compile
    :choices (jez-the jez-irn-list states)))
 
 (define-functional-struct
