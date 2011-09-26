@@ -210,7 +210,7 @@ no such node exists in PARSER."
 (defun foo ()
   (interactive)
   (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (/ "b" "c") "d"))))
+                   (top "a" (ochoice "b" "c") "d"))))
     (jezt-try-parse grammar "ad")))
 
 (provide 'jezebel-test)

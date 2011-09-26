@@ -141,19 +141,22 @@ top of the stack."
                    (jez-state--or-stack-pos state)))
 
 (defun* jez--undo-handle-choice-point (state)
-  (goto-char (jez-state-pop-undo state))
-  (setf (jez-state--and-stack state) (jez-state-pop-undo state))
-  t)
+  (jez-with-slots (ast and-stack) (jez-state state)
+    (goto-char (jez-state-pop-undo state))
+    (setf ast (jez-state-pop-undo state))
+    (setf and-stack (jez-state-pop-undo state))
+    t)                     ; stop unwinding the undo stack.
+  )
 
 (defun* jez-add-choice-point (state state-sym)
   "Add a choice point to STATE."
   (check-type state-sym symbol)
-  (jez-add-undo state
-    (if state-sym
-        (cons state-sym (jez-state--and-stack state))
-        (jez-state--and-stack state))
-    (point)
-    #'jez--undo-handle-choice-point))
+  (jez-with-slots (ast and-stack) (jez-state state)
+    (jez-add-undo state
+      (if state-sym (cons state-sym and-stack) and-stack)
+      ast
+      (point)
+      #'jez--undo-handle-choice-point)))
 
 (defun* jez-do-next (state state-sym)
   "Add NEXT-STATE to STATE and-stack."
@@ -162,6 +165,17 @@ top of the stack."
 
 (defun* jez-state-finish-current (state)
   (pop (jez-state--and-stack state)))
+
+(defun* jez--push-ast-node (state)
+  "Add an AST node to the current tree as a child of the current
+node."
+  (jez-with-slots (ast) (jez-state state)
+    (setf ast (jez-tree-append-child ast))))
+
+(defun* jez--pop-ast-node (state)
+  "Finish up the current AST node and return to its parent."
+  (jez-with-slots (ast) (jez-state state)
+    (setf ast (jez-tree-up ast))))
 
 ;;;
 ;;; Intermediate representation.
@@ -405,9 +419,14 @@ endlessly."
    (:include jez-irn)
    (:copier nil))
   "IR that matches some predicate function."
-  (predicate nil :read-only t :type function))
+  (predicate nil :read-only t))
 
 (defun* jez-predicate--compile (irn parser self)
+  "Compile a predicate."
+
+  ;; N.B. we deliberately leak "state" into the lexical environment of
+  ;; our predicate.
+  
   `(lambda (state)
      (unless ,(jez-predicate--predicate irn)
        (jez-backtrack state))))
@@ -417,6 +436,30 @@ endlessly."
   (jez--%make-predicate
    :compile-func #'jez-predicate--compile
    :predicate predicate))
+
+(define-functional-struct
+  (jez-action
+   (:conc-name jez-action--)
+   (:constructor jez--%make-action)
+   (:include jez-irn)
+   (:copier nil))
+  "IR that matches some action function."
+  (action nil :read-only t))
+
+(defun* jez-action--compile (irn parser self)
+  "Compile an action."
+
+  ;; Note that we deliberately leak "state" into the lexical
+  ;; environment of our action.
+  
+  `(lambda (state)
+     ,(jez-action--action irn)))
+
+(defun* jez--make-action (parser action)
+  "Make a new IR node for end-of-buffer."
+  (jez--%make-action
+   :compile-func #'jez-action--compile
+   :action action))
 
 ;;
 ;; Optimizer

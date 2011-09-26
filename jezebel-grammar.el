@@ -44,7 +44,7 @@ Compile the rule if necessary."
   ;; return the IRN.  Otherwise, try expanding the rule, and
   ;; if that works, recursively invoke jez-compile-rd on the
   ;; expansion.
-  
+
   ;; Otherwise, if the rule wasn't expanded, we're either at a
   ;; primitive or an invalid rule.  If we're at an invalid rule,
   ;; signal an error.  Otherwise, call the corresponding primitive
@@ -53,7 +53,7 @@ Compile the rule if necessary."
 
   (jez-with-slots (parser) (jez-environment env)
     (jez-with-slots (expansions primitives) (jez-parser parser)
-  
+
       (or
        ;; If we've already compiled this rule, return its state.
        (gethash rd expansions)
@@ -80,20 +80,25 @@ Compile the rule if necessary."
 (defun* jez--grammar-:include (parser other-grammar)
   (jez--slurp-grammar other-grammar parser))
 
-(defun* jez--grammar-:macro (parser macro-name args &rest body)
+(defun* jez--grammar-:macro (parser macro-name macro-definition)
   (check-type macro-name symbol)
-  (check-type args list)
-  (puthash macro-name
-           `(lambda ,args ,@body)
-           (jez-parser--rules parser)))
+  (check-type macro-definition function)
+  (puthash macro-name macro-definition (jez-parser--rules parser)))
 
 (defun* jez--grammar-:primitive (parser primitive-name handler)
   (check-type primitive-name symbol)
   (puthash primitive-name handler (jez-parser--primitives parser)))
 
+(defun* jez--grammar-:alias (parser old-name &rest new-names)
+  "Define a new name for an existing rule."
+  (loop for new-name in new-names
+        do (jez--grammar-:macro parser new-name
+                                `(lambda (&rest args)
+                                   `(,',old-name ,@args)))))
+
 (defun* jez--slurp-grammar (grammar parser)
   "Read rules from GRAMMAR into PARSER and return PARSER."
-  
+
   (when (symbolp grammar)
     (setf grammar (symbol-value grammar)))
 
@@ -101,16 +106,17 @@ Compile the rule if necessary."
     ;; Every grammar clause must begin with a symbol.
     (unless (and (car-safe clause) (symbolp (car clause)))
       (error "invalid grammar clause %S" clause))
-      
+
     ;; (X ...) is equivalent to (:rule X ...) if X is a non-keyword
     ;; symbol. This formulation alows users to express simple rules
     ;; simply.
     (unless (keywordp (car clause))
       (push :rule clause))
 
-    ;; (:rule NAME ...) -> (:macro NAME () '(: ...)).
+    ;; (:rule NAME ...) -> (:macro NAME (lambda () '(: ...))).
     (when (eq (car clause) :rule)
-      (setf clause `(:macro ,(cadr clause) () '(: ,@(cddr clause)))))
+      (setf clause `(:macro ,(cadr clause)
+                            (lambda () '(: ,@(cddr clause))))))
 
     ;; Call the function that processes this clause.
     (apply (or (intern-soft (format "jez--grammar-%s" (car clause)))
@@ -154,19 +160,21 @@ parsing; by default, we begin with the rule called `top'."
                 collect `(:primitive ,primitive-name ,primitive))
         ,@(loop with inner
                 for rule-name in rule-names
-                for (nil args . def) = (gethash rule-name rules)
+                for rule-def = (gethash rule-name rules)
+                for (form-name args . def) = rule-def
                 ;; If def looks like (lambda () '(: . X)) for some X,
                 ;; generate (,rule-name ,X). Otherwise, use the more
-                ;; general (:macro ,rule-name ,args ,@def) syntax. The
-                ;; former syntax is what :rule produces.
+                ;; general (:macro ,rule-name ,def) syntax. The former
+                ;; syntax is what :rule produces.
                 collect (if (and (not force-macro)
+                                 (eq form-name 'lambda)
                                  (null args)
                                  (setf inner (car def))
                                  (null (cdr def))
                                  (eq (car-safe inner) 'quote)
-                                 (setf inner (cdadr inner))) 
+                                 (setf inner (cdadr inner)))
                             `(,rule-name ,@inner)
-                          `(:macro ,rule-name ,args ,@def)))))))
+                          `(:macro ,rule-name ,rule-def)))))))
 
 (defun* jez--primitive-sequence (env &rest terms)
   (jez-with-slots (parser) (jez-environment env)
@@ -192,24 +200,71 @@ parsing; by default, we begin with the rule called `top'."
      (loop for char across (mapconcat #'identity terms "")
            collect (jez--make-char parser char)))))
 
-(defun* jez--primitive-eob (env &rest terms)
-  (when terms
-    (error "eob takes no arguments"))
-  (jez--make-predicate parser `(eobp)))
+(defun* jez--primitive-semantic-predicate (env &rest terms)
+  (jez-with-slots (parser) (jez-environment env)
+    (jez--make-predicate parser `(progn ,@terms))))
+
+(defun* jez--primitive-semantic-action (env &rest terms)
+  (jez-with-slots (parser) (jez-environment env)
+    (jez--make-action parser `(progn ,@terms))))
 
 (defconst jez-root-grammar
-  '(;; Fundamental combinators.
+  '(
+
+    ;; Fundamental combinators.
+
+    ;; Sequence: match all forms in order.  Most of the time, a
+    ;; sequence is implied when another rule takes a variable number
+    ;; of forms.
     (:primitive : jez--primitive-sequence)
+    (:alias ! and seq sequence)
+
+    ;; Repeat: Match given forms (which are enclosed in an implicit
+    ;; sequence) zero or more times.
     (:primitive * jez--primitive-repeat)
+
+    ;; Ordered choice: try matching all given forms, yielding the
+    ;; first one that successfully matches.
     (:primitive / jez--primitive-ochoice)
-    
+    (:alias / ochoice ordered-choice)
+
+    ;; Semantic action: from the perspective of the parsing engine, a
+    ;; semantic action has zero width and always succeeds.  The given
+    ;; lisp forms are evaluated in an implicit progn; the final value
+    ;; is ignored.  The lisp code may have limited side effects; see
+    ;; the manual for details.
+    (:primitive ! jez--primitive-semantic-action)
+
+    ;; Semantic predicate: all given lisp forms are evaluated in an
+    ;; implicit progn, and iff the resulting form evaluates to nil,
+    ;; the parser backtracks (or fails if we're out of choice points).
+    ;; Predicates must be free of side effects; they may be repeated,
+    ;; rearranged, or deleted entirely by the optimizer.
+    (:primitive :satisfies jez--primitive-semantic-predicate)
+
     ;; Literal handling (note: the compiler automagically transforms
     ;; an RD X into (literal X) if X is a string or (literal "X") if X
     ;; is a character.
     (:primitive literal jez--primitive-literal)
 
-    ;; Built-in predicates
-    (:primitive eob jez--primitive-eob)
+    ;; Various built-in predicates.
+    (bob (:satisfies (bobp)))
+    (:alias bob buffer-start)
+
+    (eob (:satisfies (eobp)))
+    (:alias eob buffer-end)
+
+    ;; One-or-more operator.
+    (:macro +
+            (lambda (&rest rules)
+              `(: ,@rules (* ,@rules))))
+    
+    ;; Define an AST node.
+    (:macro ast-node
+            (lambda (&rest rules)
+              `( (! (jez--push-ast-node state))
+               ,@rules
+               (! (jez--pop-ast-node state)))))
 
     ))
 
