@@ -262,9 +262,9 @@ parsing; by default, we begin with the rule called `top'."
     ;; Define an AST node.
     (:macro ast-node
             (lambda (&rest rules)
-              `( (! (jez--push-ast-node state))
-               ,@rules
-               (! (jez--pop-ast-node state)))))
+              `(: (! (jez--push-ast-node state))
+                  ,@rules
+                  (! (jez--pop-ast-node state)))))
 
     ))
 

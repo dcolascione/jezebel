@@ -1,5 +1,6 @@
 (require 'cl)
 (require 'jezebel-util)
+(require 'jezebel-tree)
 
 ;; (declare (optimize (speed 3) (safety 0)))
 
@@ -487,6 +488,7 @@ in its place."
 (defun* jez-begin-parse (parser)
   "Create a new parse state."
   (let ((state (jez--make-state :parser parser
+                                :ast (jez-make-empty-tree)
                                 :reach (point-min))))
 
     ;; If we try to backtrack past a choice point, there is no

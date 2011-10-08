@@ -207,6 +207,13 @@ no such node exists in PARSER."
     (should-not
      (jezt-try-parse grammar "ac"))))
 
+(ert-deftest jezt-ast-construction ()
+  (let ((grammar '((:include jez-root-grammar)
+                   (top (ast-node "hello"))
+                   )))
+    (should
+     (jezt-try-parse grammar "hello"))))
+
 (defun foo ()
   (interactive)
   (let ((grammar '((:include jez-root-grammar)
