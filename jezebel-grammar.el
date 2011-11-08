@@ -1,5 +1,10 @@
 ;;;
-;;; Parse grammar descriptions into parsers.
+;;; Parse grammar descriptions into parsers.  This file contains code
+;;; for translating user-visible grammars into the internal
+;;; representation used by the (interrelated) compilation and parsing
+;;; engines.
+;;; 
+;;; 
 ;;;
 
 (require 'cl)
@@ -261,11 +266,14 @@ parsing; by default, we begin with the rule called `top'."
     
     ;; Define an AST node.
     (:macro ast-node
-            (lambda (&rest rules)
-              `(: (! (jez--push-ast-node state))
+            (lambda (name-and-flags &rest rules)
+              (when (symbolp name-and-flags)
+                (setf name-and-flags (list name-and-flags)))
+              `(: (! (jez--push-ast-node state ',name-and-flags))
                   ,@rules
                   (! (jez--pop-ast-node state)))))
 
+    
     ))
 
 (provide 'jezebel-grammar)

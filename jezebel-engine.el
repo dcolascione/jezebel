@@ -167,15 +167,19 @@ top of the stack."
 (defun* jez-state-finish-current (state)
   (pop (jez-state--and-stack state)))
 
-(defun* jez--push-ast-node (state)
+(defun* jez--push-ast-node (state kind)
   "Add an AST node to the current tree as a child of the current
 node."
   (jez-with-slots (ast) (jez-state state)
-    (setf ast (jez-tree-append-child ast))))
+    (setf ast (jez-tree-append-child
+               ast
+               (list 'begin (point)
+                     'kind kind)))))
 
 (defun* jez--pop-ast-node (state)
   "Finish up the current AST node and return to its parent."
   (jez-with-slots (ast) (jez-state state)
+    (setf ast (jez-tree-put ast 'end (point)))
     (setf ast (jez-tree-up ast))))
 
 ;;;

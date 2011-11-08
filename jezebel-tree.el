@@ -59,12 +59,13 @@ new cursor pointing at the new child.  Constant time."
    :right (jez-tree-node--children (jez-tree--current tree))
    :parent tree))
 
-(defun* jez-tree-append-child (tree)
+(defun* jez-tree-append-child (tree &optional properties)
   "Add a child to the end of TREE's child list.  Return a new
 cursor pointing at the new child.  Takes time proportional to the
 number of children in TREE's current node."
   (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
+   :properties properties
    :dirty t
    :left (reverse
           (jez-tree-node--children (jez-tree--current tree)))
