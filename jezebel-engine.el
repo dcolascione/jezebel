@@ -4,6 +4,15 @@
 
 ;; (declare (optimize (speed 3) (safety 0)))
 
+(defstruct (jez-ast
+            (:constructor jez--make-ast)
+            (:copier nil)
+            (:conc-name jez-ast--))
+  parent
+  left
+  right
+  child
+  name)
 
 ;;;
 ;;; Parser infrastructure
