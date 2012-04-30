@@ -53,10 +53,8 @@
 
 (defun jez-font-lock-matcher (limit)
   "Font-lock matcher that applies highlights for a jezebel AST."
-
   
-  
-  ;; Always "fail" for font-lock's benefit
+  ;; Tell font-lock not to try to apply any highlights
   nil)
 
 (defun jez-setup-buffer (grammar)
@@ -66,6 +64,5 @@
   (setf font-lock-extend-after-change-region-function
         #'jez-extend-after-change-regione)
   (add-hook 'before-change-functions #'jez-before-change nil t))
-
 
 (provide 'jezebel-mode)

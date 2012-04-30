@@ -1,4 +1,5 @@
 ;;;; Stuff from https://github.com/sroccaserra/emacs/blob/master/tools.el
+(require 'cl)
 
 (defmacro -> (x &optional form &rest more)
   (cond ((not (null more))
@@ -74,19 +75,20 @@
    return (list* idx slot-name opts)
    finally return nil))
 
-(defun* jez--abstract-eval (form &optional default env)
-  "If FORM has a value known at compile time, return it.  Otherwise,
+(eval-and-compile
+  (defun* jez--abstract-eval (form &optional default env)
+    "If FORM has a value known at compile time, return it.  Otherwise,
 return DEFAULT."
-  (setf form (cl-macroexpand-all form env))
-  (cond ((and (memq (car-safe form) '(quote function))
-              (consp (cdr form))
-              (not (cddr form)))
-         (cadr form))
-        ((typep form '(or integer character vector string keyword))
-         form)
-        ((memq form '(nil t))
-         form)
-        (t default)))
+    (setf form (cl-macroexpand-all form env))
+    (cond ((and (memq (car-safe form) '(quote function))
+                (consp (cdr form))
+                (not (cddr form)))
+           (cadr form))
+          ((typep form '(or integer character vector string keyword))
+           form)
+          ((memq form '(nil t))
+           form)
+          (t default))))
 
 (defun* jez-slot-value (type inst slot)
   "Return the value of SLOT in struct INST of TYPE."
@@ -150,8 +152,8 @@ return DEFAULT."
          ,@body)
     (let ((inst-symbol (gensym "with-struct-slots")))
       `(let ((,inst-symbol ,inst))
-         (with-jez-struct-slots
-          ,spec-list (,conc-name ,inst-symbol) ,@body)))))
+         (jez-with-slots
+             ,spec-list ,inst-symbol ,@body)))))
 
 (put 'jez-with-slots 'lisp-indent-function 2)
 

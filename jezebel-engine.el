@@ -4,17 +4,8 @@
 
 ;; (declare (optimize (speed 3) (safety 0)))
 
-(defstruct (jez-ast
-            (:constructor jez--make-ast)
-            (:copier nil)
-            (:conc-name jez-ast--))
-  parent
-  left
-  right
-  child
-  name)
-
-;;;
+
+;;; ---------------------
 ;;; Parser infrastructure
 ;;; ---------------------
 ;;;
@@ -33,36 +24,26 @@
             (:constructor jez--make-parser)
             (:copier nil)
             (:conc-name jez-parser--))
-  
+
   "Compiled representation of a grammar that can be used to
 create jez-state that, in turn, parse buffers."
 
-  ;; Rules extracted from the grammar description with which this
-  ;; parser was created.
-  (rules (make-hash-table))
-
-  ;; Primitives extracted from the grammar description with which this
-  ;; parser was created.
-  (primitives (make-hash-table))
-
-  ;; Holds initial state symbol for this parser.
+  ;; Initial state symbol for this parser.
   (initial-state nil)
 
-  ;; Maps rule primitive expressions to their resulting IR nodes.
-  (expansions (make-hash-table :test 'equal))
+  ;; Node names
+  (node-names (make-hash-table))
 
-  ;; Maps IR nodes to their state symbols
-  (node-names (make-hash-table :weakness 'value)))
+  ;; This function copies the runtime state of this parser.
+  (state-copier nil)
+)
 
 (defstruct (jez-state
             (:constructor jez--make-state)
             (:copier nil)
             (:conc-name jez-state--))
-  
-  "State of an ongoing parse."
 
-  ;; The parse tree we've constructed so far, a jez-tree instance
-  ast
+  "State of an ongoing parse."
 
   ;; Reach (buffer position)
   (reach 0)
@@ -121,7 +102,7 @@ vector given by VEC-PLACE and POS-PLACE."
     (while (not (funcall (aref os (decf osp)) state)))))
 
 (defun* jez-add-undo-1 (state item)
-  "Add an undo record to STATE.  
+  "Add an undo record to STATE.
 
 To backtrack, we pop the first item from STATE's or-stack and
 call it as a function.  If this function returns nil, we repeat
@@ -138,6 +119,7 @@ top of the stack."
     (jez-add-undo-1 state item)))
 
 (define-compiler-macro jez-add-undo (state &rest items)
+  "Add entries to a state's undo stack."
   `(symbol-macrolet ((os (jez-state--or-stack state))
                      (osp (jez-state--or-stack-pos state)))
      (when (<= (+ osp ,(length items)) (length os))
@@ -147,59 +129,50 @@ top of the stack."
 (put 'jez-add-undo 'lisp-indent-function 1)
 
 (defun* jez-state-pop-undo (state)
+  "Remove an entry from a state's undo stack and return it."
   (jez--pop-vector (jez-state--or-stack state)
                    (jez-state--or-stack-pos state)))
 
 (defun* jez--undo-handle-choice-point (state)
-  (jez-with-slots (ast and-stack) (jez-state state)
+  "Handle undoing up to a choice point."
+  (jez-with-slots (and-stack) (jez-state state)
     (goto-char (jez-state-pop-undo state))
-    (setf ast (jez-state-pop-undo state))
     (setf and-stack (jez-state-pop-undo state))
     t)                     ; stop unwinding the undo stack.
   )
 
 (defun* jez-add-choice-point (state state-sym)
-  "Add a choice point to STATE."
+  "Add a choice point to STATE.  If STATE-SYM
+is non-nil, put STATE-SYM on the and-stack when we backtrack
+to this chioce point."
   (check-type state-sym symbol)
-  (jez-with-slots (ast and-stack) (jez-state state)
+  (jez-with-slots (and-stack) (jez-state state)
     (jez-add-undo state
       (if state-sym (cons state-sym and-stack) and-stack)
-      ast
       (point)
       #'jez--undo-handle-choice-point)))
 
-(defun* jez-do-next (state state-sym)
-  "Add NEXT-STATE to STATE and-stack."
-  (check-type state-sym symbol)
-  (push state-sym (jez-state--and-stack state)))
+(defun* jez-do-next (state next-state)
+  "Add NEXT-STATE to STATE's and-stack; the next time JEZ-ADVANCE is called,
+we'll try to match the state given by NEXT-STATE and if that
+doesn't match, we'll backtrack."
+  (check-type next-state symbol)
+  (push next-state (jez-state--and-stack state)))
 
 (defun* jez-state-finish-current (state)
   (pop (jez-state--and-stack state)))
 
-(defun* jez--push-ast-node (state kind)
-  "Add an AST node to the current tree as a child of the current
-node."
-  (jez-with-slots (ast) (jez-state state)
-    (setf ast (jez-tree-append-child
-               ast
-               (list 'begin (point)
-                     'kind kind)))))
-
-(defun* jez--pop-ast-node (state)
-  "Finish up the current AST node and return to its parent."
-  (jez-with-slots (ast) (jez-state state)
-    (setf ast (jez-tree-put ast 'end (point)))
-    (setf ast (jez-tree-up ast))))
-
-;;;
+
+;;; ----------------------------
 ;;; Intermediate representation.
 ;;; ----------------------------
 ;;;
 ;;; When we compile a grammar using JEZ-COMPILE, we first transform
 ;;; the input into a graph of jez-irn instances.  Each node represents
-;;; a possible state our parser (or more specifically, its jez-state
-;;; instance) may take on during parsing.  Each potential state
-;;; transition is an edge in this graph.
+;;; a possible state our parser (or more specifically, the state of
+;;; the jez-state object representing a particular parse) may take on
+;;; during parsing.  Each potential state transition is an edge in
+;;; this graph.
 ;;;
 ;;; Each node is associated with a Lisp function that, when called
 ;;; with a given jez-state instance, selects on appropriate transition
@@ -216,7 +189,7 @@ node."
 ;;; operation of these parse functions.)  We generate this function by
 ;;; calling JEZ-IRN-COMPILE on the IR node, which in turn calls the
 ;;; function given by the `compile-func' slot of the node instance.
-;;; 
+;;;
 ;;; This final transformation allows us to transition from one state
 ;;; to the next via a simple FUNCALL, giving us maximum efficiency.
 ;;;
@@ -241,7 +214,7 @@ node."
 ;;; instead try the path specified in the call to
 ;;; JEZ-ADD-CHOICE-POINT.  The top of the and-stack in the returned
 ;;; state is the new state of the parse.
-;;; 
+;;;
 ;;; On failure, the state function calls JEZ-BACKTRACK on the input
 ;;; state and returns its result.  JEZ-BACKTRACK essentially returns
 ;;; to the state of the parse at the last call to
@@ -254,7 +227,7 @@ node."
 ;;;
 ;;; Reach
 ;;; -----
-;;; 
+;;;
 ;;; Each jez-state maintains a field called "reach" which holds the
 ;;; greatest buffer examined during the parse.  Unlike most other
 ;;; fields, reach is _not_ saved and restored during backtracking.
@@ -269,14 +242,15 @@ node."
    (:constructor nil)
    (:copier nil))
   "Abstract base for an IR node in a parse-state graph."
-  
+
   ;; Function that builds a parse function for this IRN.  The return
-  ;; value must be a lambda of one argument, which, when called with
-  ;; an existing jez-state instance, returns a new jez-state.
+  ;; value if this function must itself be a function of one argument,
+  ;; which, when called with an existing jez-state instance, returns a
+  ;; new jez-state.
   (compile-func nil :read-only t :type function))
 
 (deftype jez-irn-list ()
-  '(jez-list-of-type jez-irn))
+  '(jez-list-of-type (or symbol jez-irn)))
 
 (defun* jez-irn-compile (irn parser)
   "Return the state symbol for IRN.  The returned symbol's
@@ -290,6 +264,11 @@ not previously been compiled, do that during this call."
             (puthash irn name node-names)
             (fset name (funcall compile-func irn parser name))
             name)))))
+
+
+;;; ------------
+;;; Sequence IRN
+;;; ------------
 
 (define-functional-struct
   (jez-sequence
@@ -307,13 +286,14 @@ not previously been compiled, do that during this call."
 
 (defun* jez--make-sequence (parser states)
   "Make a jez-sequence instance."
-  (cond ((and (car states)
-              (not (cdr states)))
-         (car states))
-        (t
-         (jez--%make-sequence
-          :compile-func #'jez-sequence--compile
-          :pstates (jez-the jez-irn-list states)))))
+  (jez--%make-sequence
+   :compile-func #'jez-sequence--compile
+   :pstates (jez-the jez-irn-list states)))
+
+
+;;; ------------------
+;;; Ordered choice IRN
+;;; ------------------
 
 (define-functional-struct
   (jez-ochoice
@@ -354,6 +334,11 @@ not previously been compiled, do that during this call."
    :compile-func #'jez-ochoice--compile
    :choices (jez-the jez-irn-list states)))
 
+
+;;; --------------
+;;; Repetition IRN
+;;; --------------
+
 (define-functional-struct
   (jez-repeat
    (:conc-name jez-repeat--)
@@ -372,7 +357,10 @@ not previously been compiled, do that during this call."
 
      ;; We first pop the and-stack and try to match the thing we're
      ;; trying to repeat.  If successful, we return to this state and
-     ;; match over and over again.
+     ;; match over and over again.  We'll eventually run out of items
+     ;; to match (either because we see a different item or because we
+     ;; run out of tokens to parse) and go to the backtracking point
+     ;; above.
      (jez-do-next state ',self)
      (jez-do-next state ',(jez-irn-compile (jez-repeat--pstate irn)
                                            parser))))
@@ -382,6 +370,11 @@ not previously been compiled, do that during this call."
   (jez--%make-repeat
    :compile-func #'jez-repeat--compile
    :pstate (jez-the jez-irn state)))
+
+
+;;; --------------------------
+;;; Single-character match IRN
+;;; --------------------------
 
 (define-functional-struct
   (jez-char
@@ -403,6 +396,11 @@ not previously been compiled, do that during this call."
   (jez--%make-char
    :compile-func #'jez-char--compile
    :char (jez-the character char)))
+
+
+;;; ------------------------
+;;; Special end-of-parse IRN
+;;; ------------------------
 
 (define-functional-struct
   (jez-end-state
@@ -426,6 +424,11 @@ endlessly."
    :compile-func #'jez-end-state--compile
    :result result))
 
+
+;;; ----------------------
+;;; Semantic predicate IRN
+;;; ----------------------
+
 (define-functional-struct
   (jez-predicate
    (:conc-name jez-predicate--)
@@ -440,7 +443,7 @@ endlessly."
 
   ;; N.B. we deliberately leak "state" into the lexical environment of
   ;; our predicate.
-  
+
   `(lambda (state)
      (unless ,(jez-predicate--predicate irn)
        (jez-backtrack state))))
@@ -450,6 +453,11 @@ endlessly."
   (jez--%make-predicate
    :compile-func #'jez-predicate--compile
    :predicate predicate))
+
+
+;;; -------------------
+;;; Semantic action IRN
+;;; -------------------
 
 (define-functional-struct
   (jez-action
@@ -465,7 +473,7 @@ endlessly."
 
   ;; Note that we deliberately leak "state" into the lexical
   ;; environment of our action.
-  
+
   `(lambda (state)
      ,(jez-action--action irn)))
 
@@ -475,45 +483,47 @@ endlessly."
    :compile-func #'jez-action--compile
    :action action))
 
-;;
-;; Optimizer
-;;
+
+;;; ---------
+;;; Optimizer
+;;; ---------
 
 (defun* jez--optimize (parser irn &optional seen)
   "Optmize IRN, which belongs to PARSER.  Return a new irn to use
 in its place."
 
-  ;; seen holds references to nodes we've already optimized,
-  ;; allowing us to avoid recursing endlessly when the parse graph
-  ;; contains cycles.
+  ;; The `seen' variable holds references to nodes we've already
+  ;; optimized, allowing us to avoid recursing endlessly when the
+  ;; parse graph contains cycles.
 
   (let ((new-irn irn))
-  
+
     (unless seen
       (setf seen (make-hash-table :test 'eq)))
 
     new-irn))
 
-;;
-;; Parsing
-;;
+
+;;; -------
+;;; Parsing
+;;; -------
 
 (defun* jez-begin-parse (parser)
   "Create a new parse state."
   (let ((state (jez--make-state :parser parser
-                                :ast (jez-make-empty-tree)
                                 :reach (point-min))))
 
-    ;; If we try to backtrack past a choice point, there is no
-    ;; possible way to continue.  Arrange to transition to a state
-    ;; that fails forever in this case.
+    ;; If we try to backtrack past the last choice point, there is no
+    ;; possible way to continue.  Arrange for jez-advance to
+    ;; transition to a special state in this case: this special state
+    ;; just fails forever.
     (jez-add-choice-point state
                           (jez-irn-compile
                            (jez--make-end-state parser 'fail)
                            parser))
 
-    ;; After we're successfully parsed everything, transition to a
-    ;; state that succeeds forever.
+    ;; Similarly, after we're successfully parsed everything,
+    ;; transition to a state that succeeds forever.
     (jez-do-next state (jez-irn-compile
                         (jez--make-end-state parser 'done)
                         parser))
@@ -531,5 +541,10 @@ otherwise."
   (jez-with-slots (and-stack) (jez-state state)
     (assert and-stack)
     (funcall (pop and-stack) state)))
+
+
+;;; ---
+;;; End
+;;; ---
 
 (provide 'jezebel-engine)
