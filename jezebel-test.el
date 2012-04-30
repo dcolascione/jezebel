@@ -11,11 +11,6 @@
     (top "hello")
     (foo bar qux)))
 
-(defun* jezt-examine-grammar (grammar &rest args)
-  (apply #'jez-describe-parser
-         (jez--slurp-grammar grammar (jez--make-parser))
-         args))
-
 (defun* jezt-hash-rmap (value
                         table
                         &optional (test #'eq)
@@ -70,7 +65,7 @@ no such node exists in PARSER."
 
 (defun* jezt-describe-state (state stepno point)
   (princ (format "step %d point:%d\n" stepno point))
-  (jez-with-slots (parser and-stack or-stack or-stack-pos)
+  (jez-with-slots (and-stack or-stack or-stack-pos)
       (jez-state state)
     
     (princ (format "and-stack:%S\n" and-stack))
@@ -78,7 +73,7 @@ no such node exists in PARSER."
           for i upfrom 0
           do (progn
                (princ (format " %2d: " i))
-               (jezt-describe-stackent parser val)
+               (jezt-describe-stackent nil val)
                (princ "\n")))
 
     (princ "\nor-stack:\n")
@@ -87,7 +82,7 @@ no such node exists in PARSER."
           for val = (aref or-stack i)
           do (progn
                (princ (format " %2d: " i))
-               (jezt-describe-stackent parser val)
+               (jezt-describe-stackent nil val)
                (princ "\n")))))
 
 (defconst jezt-parse-debug-keymap
@@ -151,7 +146,7 @@ no such node exists in PARSER."
                               (setf debug nil)
                               nil)
                              ((commandp binding t)
-                              (let* ((parser (jez-state--parser state))
+                              (let* ((parser nil)
                                      (and-stack (jez-state--and-stack state)))
                                 (call-interactively binding nil key))
                               (when (eq binding 'eval-expression)
@@ -208,7 +203,7 @@ no such node exists in PARSER."
 
 (ert-deftest jezt-ast-construction ()
   (let ((grammar '((:include jez-root-grammar)
-                   (top (ast-node "hello"))
+                   (top (ast-node 'hello))
                    )))
     (should
      (jezt-try-parse grammar "hello"))))

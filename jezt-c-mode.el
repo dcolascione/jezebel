@@ -1,11 +1,13 @@
 (require 'jezebel-mode)
 
 (defconst jezt-cmode-grammar
-  '((top
+  '((:section :ast-node)
+
+    (top
      (: (* optws)
         (* (: optws toplevel-declaration optws))
         (* optws)))
-    
+
     (toplevel-declaration
      (: variable-declaration))
 
@@ -18,20 +20,22 @@
     (variable-name
      (: identifier))
 
-    ((identifier :inline t)
-     (: (in (?a ?z) (?A ?Z) ?_)
-        (* (in  (?a ?z) (?A ?Z) (?0 ?9) ?_))))
+    (identifier
+     (ast-node 'identifier
+               (in "a-zA-Z_")
+               (* (in  "a-zA-Z0-9_"))))
 
-    ((ws :inline t)
-     (+ (in ?\n ?\  ?\t )))
+    (section :rule)
 
-    ((opt-ws :inline t)
-     (* (in ?\n ?\  ?\t )))
+    (ws
+     (+ (in " \t\n")))
 
-    (:fontification jezt-cmode-grammar-fontification)))
+    (opt-ws
+     (* (in " \t\n")))
 
-(defconst jezt-cmode-grammar-fontification
-  '((type font-lock-type-face)
+    (:section :font)
+
+    (type font-lock-type-face)
     (variable-name font-lock-variable-name-face)))
 
 (defconst jezt-cmode-font-lock-keywords

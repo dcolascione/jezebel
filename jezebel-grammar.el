@@ -59,6 +59,7 @@
               `(: ,@rules (* ,@rules))))
 
     ;; Define an AST node.
+    (:attribute ast jez--save-ast jez--restore-ast)
     (:macro ast-node
             (lambda (name &rest rules)
               `(: (! (jez--push-ast-node state ',name))
@@ -80,15 +81,19 @@
   (primitives (make-hash-table))
 
   ;; Hash table memozing the result of jez-compile-rd.
-  (expansions (make-hash-table :test 'equal))
-
-  ;; The parser for this environment
-  (parser :read-only t :type jez-parser))
+  (expansions (make-hash-table :test 'equal)))
 
 
 ;; -------------
 ;; Rule compiler
 ;; -------------
+
+(defvar jez--non-keyword-handler nil
+  "This lexically-bound variable holds the name of the keyword
+that jez--slurp-grammar prepends to grammar clauses that do not
+themselves begin with keywords.  By changing this variable,
+grammar clause handlers can divide a grammar description into
+\"sections\"."  )
 
 (defun* jez--normalize-rd (rd)
   (etypecase rd
@@ -154,6 +159,41 @@ node."
        (puthash rd irn-symbol expansions)
        (set irn-symbol (apply handler env (rest rd)))))))
 
+(defun* jez--slurp-grammar-clause (clause env)
+  (let ((handler jez--non-keyword-handler))
+    (unless (consp clause)
+      (error "each grammar clause must be a sexp"))
+
+    ;; Every grammar clause must begin with a symbol.
+    (unless (symbolp (car clause))
+      (error "grammar clause must begin with symbol, not %S" clause))
+
+    (when (keywordp (car clause))
+      (setf handler (car clause))
+      (setf clause (cdr clause)))
+
+    (apply (or (get handler 'jez-grammar-clause-handler)
+               (error "%S is not a known clause type" handler))
+           env clause)))
+
+(defun* jez--slurp-grammar (grammar env)
+  "Read rules from GRAMMAR into ENV.
+GRAMMAR is a passive data structure that describes the rules for
+building a parser."
+
+  ;; Sometimes it's convenient to name a variable containing a grammar
+  ;; instead of including it inline.
+  (when (symbolp grammar)
+    (setf grammar (symbol-value grammar)))
+
+  ;; A grammar is a list of s-expressions.  The car of each expression
+  ;; tells us how to process it: we require it to be a symbol and call
+  ;; the function jez--grammar-SYMBOL to process the clause.  If no
+  ;; such function exists, we assume we're looking at a rule.
+  (let ((jez--non-keyword-handler :rule))
+    (dolist (clause grammar)
+      (jez--slurp-grammar-clause clause env))))
+
 (defun* jez--grammar-:include (env other-grammar)
   ;; Incorporate the definitions in OTHER-GRAMMAR into ENV.
   (jez--slurp-grammar other-grammar env))
@@ -169,10 +209,33 @@ node."
 (defun* jez--grammar-:alias (env old-name &rest new-names)
   "Define a new name for an existing rule."
   (loop for new-name in new-names
-        do (jez--grammar-:macro env new-name
-                                `(lambda (&rest args)
-                                   `(,',old-name ,@args)))))
+        do (jez--slurp-grammar-clause
+            `(:macro ,new-name (lambda (&rest args)
+                                 `(,',old-name ,@args)))
+            env)))
 (put :alias 'jez-grammar-clause-handler #'jez--grammar-:alias)
+
+(defun* jez--grammar-:section (env new-section &rest clauses)
+  (if (null clauses)
+      (setf jez--non-keyword-handler new-section)
+    (let ((jez--non-keyword-handler new-section))
+      (dolist (clause clauses)
+        (jez--slurp-grammar-clause clause env)))))
+(put :section 'jez-grammar-clause-handler #'jez--grammar-:section)
+(put :section 'lisp-indent-function 1)
+
+(defun* jez--grammar-:ast-node (env node-name &rest body)
+  (jez--slurp-grammar-clause
+   `(:rule ,node-name (ast-node ,node-name ,@body))
+   env))
+(put :ast-node 'jez-grammar-clause-handler #'jez--grammar-:ast-node)
+
+(defun* jez--grammar-:attribute (env
+                                 attribute-name
+                                 save-function
+                                 restore-function)
+  t)
+(put :attribute 'jez-grammar-clause-handler #'jez--grammar-:attribute)
 
 (defun* jez--grammar-:macro (env macro-name &optional arglist &rest body)
   (unless (symbolp macro-name)
@@ -200,54 +263,10 @@ node."
 
 (defun* jez--grammar-:rule (env rule-name &rest body)
   "Define a plain grammar rule in the current namespace."
-
   ;; Every plain rule is actually a macro of no arguments that just
   ;; returns its definition.
-  (let ((clause
-         `(:macro ,rule-name () '(: ,@body))))
-    (apply (get :macro 'jez-grammar-clause-handler) env (cdr clause))))
+  (jez--slurp-grammar-clause `(:macro ,rule-name () '(: ,@body)) env))
 (put :rule 'jez-grammar-clause-handler #'jez--grammar-:rule)
-
-(defvar jez--non-keyword-handler nil
-  "This lexically-bound variable holds the name of the keyword
-that jez--slurp-grammar prepends to grammar clauses that do not
-themselves begin with keywords.  By changing this variable,
-grammar clause handlers can divide a grammar description into
-\"sections\"."  )
-
-(defun* jez--slurp-grammar (grammar env)
-  "Read rules from GRAMMAR into ENV.
-GRAMMAR is a passive data structure that describes the rules for
-building a parser."
-
-  ;; Sometimes it's convenient to name a variable containing a grammar
-  ;; instead of including it inline.
-  (when (symbolp grammar)
-    (setf grammar (symbol-value grammar)))
-
-  ;; A grammar is a list of s-expressions.  The car of each expression
-  ;; tells us how to process it: we require it to be a symbol and call
-  ;; the function jez--grammar-SYMBOL to process the clause.  If no
-  ;; such function exists, we assume we're looking at a rule.
-  (loop
-   with jez--non-keyword-handler = :rule
-   for handler = jez--non-keyword-handler
-   for clause in grammar do
-   (progn
-     (unless (consp clause)
-       (error "each grammar clause must be a sexp"))
-
-     ;; Every grammar clause must begin with a symbol.
-     (unless (symbolp (car clause))
-       (error "grammar clause must begin with symbol, not %S" clause))
-
-     (when (keywordp (car clause))
-       (setf handler (car clause))
-       (setf clause (cdr clause)))
-
-     (apply (or (get handler 'jez-grammar-clause-handler)
-                (error "%S is not a known clause type" handler))
-            env clause))))
 
 (defun* jez-compile (grammar &optional (top-rd '(: top eob)))
   "Compiles GRAMMAR into a jez-parser. Return the new parser instance.
@@ -276,15 +295,10 @@ parsing; by default, we begin with the rule called `top'."
   ;; Finally, we return the parser, which is now ready to use.
   ;;
 
-  (let* ((parser (jez--make-parser))
-         (env (jez--make-environment :parser parser))
-         top-irn)
+  (let* ((env (jez--make-environment)))
     (jez--slurp-grammar jez-root-grammar env)
     (jez--slurp-grammar grammar env)
-    (setf top-irn (jez-compile-rd env top-rd))
-    (setf (jez-parser--initial-state parser)
-          (jez-irn-compile top-irn parser))
-    parser))
+    (jez--make-parser (jez-compile-rd env top-rd))))
 
 
 ;; ----------
@@ -311,38 +325,28 @@ parsing; by default, we begin with the rule called `top'."
 ;;
 
 (defun* jez--primitive-sequence (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-sequence
-     parser
-     (loop for term in terms
-           collect (jez-compile-rd env term)))))
+  (jez--make-sequence
+   (loop for term in terms
+         collect (jez-compile-rd env term))))
 
 (defun* jez--primitive-repeat (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-repeat
-     parser
-     (apply #'jez--primitive-sequence env terms))))
+  (jez--make-repeat
+   (apply #'jez--primitive-sequence env terms)))
 
 (defun* jez--primitive-ochoice (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-ochoice
-     parser
-     (loop for term in terms
-           collect (jez-compile-rd env term)))))
+  (jez--make-ochoice
+   (loop for term in terms
+         collect (jez-compile-rd env term))))
 
 (defun* jez--primitive-literal (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-sequence
-     parser
-     (loop for char across (mapconcat #'identity terms "")
-           collect (jez--make-char parser char)))))
+  (jez--make-sequence
+   (loop for char across (mapconcat #'identity terms "")
+         collect (jez--make-char char))))
 
 (defun* jez--primitive-semantic-predicate (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-predicate parser `(progn ,@terms))))
+  (jez--make-predicate `(progn ,@terms)))
 
 (defun* jez--primitive-semantic-action (env &rest terms)
-  (jez-with-slots (parser) (jez-environment env)
-    (jez--make-action parser `(progn ,@terms))))
+  (jez--make-action `(progn ,@terms)))
 
 (provide 'jezebel-grammar)

@@ -43,6 +43,7 @@ functional data structure."
   ;; Parent jez-tree (not jez-tree-node!) or nil if we're at top
   parent
 
+  ;; Properties of this tree node.
   properties
   )
 
@@ -51,11 +52,12 @@ functional data structure."
   (jez--make-tree
    :current (jez--make-tree-node)))
 
-(defun* jez-tree-prepend-child (tree)
+(defun* jez-tree-prepend-child (tree &optional properties)
   "Add a child to the beginning of TREE's child list.  Return a
 new cursor pointing at the new child.  Constant time."
   (copy-and-modify-jez-tree tree
    :current (jez--make-tree-node)
+   :properties properties
    :dirty t
    :left nil
    :right (jez-tree-node--children (jez-tree--current tree))

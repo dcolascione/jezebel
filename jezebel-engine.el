@@ -21,7 +21,7 @@
 ;;;
 
 (defstruct (jez-parser
-            (:constructor jez--make-parser)
+            (:constructor jez--%make-parser)
             (:copier nil)
             (:conc-name jez-parser--))
 
@@ -32,10 +32,7 @@ create jez-state that, in turn, parse buffers."
   (initial-state nil)
 
   ;; Node names
-  (node-names (make-hash-table))
-
-  ;; This function copies the runtime state of this parser.
-  (state-copier nil))
+  (node-names (make-hash-table)))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
@@ -54,8 +51,8 @@ create jez-state that, in turn, parse buffers."
   ;; Stack of states to enter when successful
   and-stack
 
-  ;; Reference to the parser that created us (which is immutable)
-  parser)
+  ;; The current AST
+  (ast (jez-make-empty-tree)))
 
 (defun* jez--double-vector (vec &optional init)
   "Return a copy of vector VEC of twice its length.  The additional
@@ -160,6 +157,15 @@ doesn't match, we'll backtrack."
 
 (defun* jez-state-finish-current (state)
   (pop (jez-state--and-stack state)))
+
+(defun* jez-state-copy (state)
+  "Return an independent copy of STATE."
+  (jez--make-state
+   :reach (jez-state--reach state)
+   :or-stack (copy-sequence (jez-state--or-stack state))
+   :or-stack-pos (jez-state--or-stack-pos state)
+   :and-stack (jez-state--and-stack state)
+   :ast (jez-state--ast state)))
 
 
 ;;; ----------------------------
@@ -283,7 +289,7 @@ not previously been compiled, do that during this call."
      ,@(loop for irn in (reverse (jez-sequence--pstates irn))
              collect `(jez-do-next state ',(jez-irn-compile irn parser)))))
 
-(defun* jez--make-sequence (parser states)
+(defun* jez--make-sequence (states)
   "Make a jez-sequence instance."
   (jez--%make-sequence
    :compile-func #'jez-sequence--compile
@@ -322,12 +328,12 @@ not previously been compiled, do that during this call."
            `(lambda (state)
               (jez-add-choice-point state
                                     ',(jez-irn-compile
-                                       (jez--make-ochoice parser (cdr choices))
+                                       (jez--make-ochoice (cdr choices))
                                        parser))
               (jez-do-next state ',(jez-irn-compile (car choices) parser))
               )))))
 
-(defun* jez--make-ochoice (parser states)
+(defun* jez--make-ochoice (states)
   "Make a jez-ochoice instance."
   (jez--%make-ochoice
    :compile-func #'jez-ochoice--compile
@@ -364,7 +370,7 @@ not previously been compiled, do that during this call."
      (jez-do-next state ',(jez-irn-compile (jez-repeat--pstate irn)
                                            parser))))
 
-(defun* jez--make-repeat (parser state)
+(defun* jez--make-repeat (state)
   "Make an IR node matching STATE zero or more times."
   (jez--%make-repeat
    :compile-func #'jez-repeat--compile
@@ -390,7 +396,7 @@ not previously been compiled, do that during this call."
          (forward-char)
        (jez-backtrack state))))
 
-(defun* jez--make-char (parser char)
+(defun* jez--make-char (char)
   "Make an IR node matching a character."
   (jez--%make-char
    :compile-func #'jez-char--compile
@@ -416,7 +422,7 @@ endlessly."
      (jez-do-next state ',self)
      ',(jez-end-state--result irn)))
 
-(defun* jez--make-end-state (parser result)
+(defun* jez--make-end-state (result)
   "Make a new IR node for an end state."
   (assert (memq result '(done fail)))
   (jez--%make-end-state
@@ -447,7 +453,7 @@ endlessly."
      (unless ,(jez-predicate--predicate irn)
        (jez-backtrack state))))
 
-(defun* jez--make-predicate (parser predicate)
+(defun* jez--make-predicate (predicate)
   "Make a new IR node for end-of-buffer."
   (jez--%make-predicate
    :compile-func #'jez-predicate--compile
@@ -478,7 +484,7 @@ endlessly."
   `(lambda (state)
      ,(jez-action--action irn)))
 
-(defun* jez--make-action (parser action)
+(defun* jez--make-action (action)
   "Make a new IR node for end-of-buffer."
   (jez--%make-action
    :compile-func #'jez-action--compile
@@ -509,31 +515,38 @@ in its place."
 ;;; Parsing
 ;;; -------
 
+(defun* jez--make-parser (top-irn)
+  (let* ((parser (jez--%make-parser)))
+    (jez-with-slots (initial-state) (jez-parser parser)
+      (setf initial-state (jez--make-state))
+
+      ;; If we try to backtrack past the last choice point, there is no
+      ;; possible way to continue.  Arrange for jez-advance to
+      ;; transition to a special state in this case: this special state
+      ;; just fails forever.
+      (jez-add-choice-point initial-state
+                            (jez-irn-compile
+                             (jez--make-end-state 'fail)
+                             parser))
+
+      ;; Similarly, after we're successfully parsed everything,
+      ;; transition to a state that succeeds forever.
+      (jez-do-next initial-state
+                   (jez-irn-compile
+                    (jez--make-end-state 'done)
+                    parser))
+
+      ;; Begin parsing in the initial state.
+      (jez-do-next initial-state
+                   (jez-irn-compile top-irn parser)))
+
+    parser))
+
 (defun* jez-begin-parse (parser)
-  "Create a new parse state."
-  (let ((state (jez--make-state :parser parser
-                                :reach (point-min))))
-
-    ;; If we try to backtrack past the last choice point, there is no
-    ;; possible way to continue.  Arrange for jez-advance to
-    ;; transition to a special state in this case: this special state
-    ;; just fails forever.
-    (jez-add-choice-point state
-                          (jez-irn-compile
-                           (jez--make-end-state parser 'fail)
-                           parser))
-
-    ;; Similarly, after we're successfully parsed everything,
-    ;; transition to a state that succeeds forever.
-    (jez-do-next state (jez-irn-compile
-                        (jez--make-end-state parser 'done)
-                        parser))
-
-    ;; Begin parsing in the initial state.
-    (jez-do-next state (jez-parser--initial-state parser))
-
-    ;; Parser is now ready for use.
-    state))
+  "Begin parsing using a state."
+  (let ((new-state (jez-state-copy (jez-parser--initial-state parser))))
+    (setf (jez-state--reach new-state) (point-min))
+    new-state))
 
 (defun* jez-advance (state)
   "Update parse state STATE.  Return the symbol `done' if we are
