@@ -35,8 +35,7 @@ create jez-state that, in turn, parse buffers."
   (node-names (make-hash-table))
 
   ;; This function copies the runtime state of this parser.
-  (state-copier nil)
-)
+  (state-copier nil))
 
 (defstruct (jez-state
             (:constructor jez--make-state)
@@ -466,6 +465,8 @@ endlessly."
    (:include jez-irn)
    (:copier nil))
   "IR that matches some action function."
+
+  ;; Form that's evaluated when we match.
   (action nil :read-only t))
 
 (defun* jez-action--compile (irn parser self)
@@ -481,7 +482,7 @@ endlessly."
   "Make a new IR node for end-of-buffer."
   (jez--%make-action
    :compile-func #'jez-action--compile
-   :action action))
+   :action (jez-the list action)))
 
 
 ;;; ---------

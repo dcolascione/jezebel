@@ -42,6 +42,8 @@ functional data structure."
   
   ;; Parent jez-tree (not jez-tree-node!) or nil if we're at top
   parent
+
+  properties
   )
 
 (defun* jez-make-empty-tree ()

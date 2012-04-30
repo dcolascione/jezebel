@@ -1,8 +1,9 @@
 (require 'jezebel-test-util)
 (require 'jezebel-util)
 
-(defmacro* jezt-functional-struct-test (&rest forms)
-  "Test a jetz functional struct. Runs FORMS repeatedly,
+(eval-and-compile
+  (defmacro* jezt-functional-struct-test (&rest forms)
+    "Test a jetz functional struct. Runs FORMS repeatedly,
 once for each variety of functional structure.
 
 For each iteration, replace the following symbols with the
@@ -14,45 +15,46 @@ make-jezt-fstruct
 copy-and-modify-jezt-fstruct
 "
 
-  `(progn
-     (define-functional-struct (jezt-fstruct-list
-                                (:type list)
-                                (:named))
-       field1
-       field2)
+    `(progn
+       (define-functional-struct (jezt-fstruct-list
+                                  (:type list)
+                                  (:named))
+         field1
+         field2)
      
-     (define-functional-struct (jezt-fstruct-vector
-                                (:type vector)
-                                (:named))
-       field1
-       field2)
+       (define-functional-struct (jezt-fstruct-vector
+                                  (:type vector)
+                                  (:named))
+         field1
+         field2)
 
-     (define-functional-struct (jezt-fstruct-list-unnamed
-                                (:type list))
-       field1
-       field2)
+       (define-functional-struct (jezt-fstruct-list-unnamed
+                                  (:type list))
+         field1
+         field2)
      
-     (define-functional-struct (jezt-fstruct-vector-unnamed
-                                (:type vector))
-       field1
-       field2)     
+       (define-functional-struct (jezt-fstruct-vector-unnamed
+                                  (:type vector))
+         field1
+         field2)     
      
-     ,@(loop for s in '(jezt-fstruct-list
-                        jezt-fstruct-vector
-                        jezt-fstruct-list-unnamed
-                        jezt-fstruct-vector-unnamed)
-             collect (sublis
-                      (loop for sym in '(jezt-fstruct-field1
-                                         jezt-fstruct-field2
-                                         make-jezt-fstruct
-                                         copy-and-modify-jezt-fstruct)
-                            for sname = (symbol-name sym)
-                            do (when (string-match "jezt-fstruct" sname)
-                                 (setf sname
-                                       (replace-match (symbol-name s) t t sname)))
-                            collect (cons sym (intern sname)))
-                      (list* 'progn
-                             forms)))))
+       ,@(loop for s in '(jezt-fstruct-list
+                          jezt-fstruct-vector
+                          jezt-fstruct-list-unnamed
+                          jezt-fstruct-vector-unnamed)
+               collect (sublis
+                        (loop for sym in '(jezt-fstruct-field1
+                                           jezt-fstruct-field2
+                                           make-jezt-fstruct
+                                           copy-and-modify-jezt-fstruct)
+                              for sname = (symbol-name sym)
+                              do (when (string-match "jezt-fstruct" sname)
+                                   (setf sname
+                                         (replace-match (symbol-name s) t t sname)))
+                              collect (cons sym (intern sname)))
+                        (list* 'progn
+                               forms)))))
+  (jezt-functional-struct-test t))
 
 (ert-deftest jezt-functional-struct-basic ()
   "Test basic operation of functional structs."

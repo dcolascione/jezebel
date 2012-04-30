@@ -36,9 +36,9 @@ no such node exists in PARSER."
 (defun* jezt-find-primitive (parser name)
   "Find the primitive that compiled down to NAME."
   (let ((irn (if (jez-irn-p name)
-                 irn
+                 name
                (jezt-find-irn parser name))))
-    (jezt-hash-rmap irn (jez-parser--expansions parser))))
+    (jezt-hash-rmap irn nil)))
 
 (defun* jezt-describe-irn (parser irn)
   (let* ((type (jez-struct-type irn))
@@ -171,8 +171,7 @@ no such node exists in PARSER."
       success)))
 
 (ert-deftest jezt-compile-grammar ()
-  (let* ((parser (jez-compile jezt-simple-grammar)))
-    (jez-parser--states parser)))
+  (jez-compile jezt-simple-grammar))
 
 (ert-deftest jezt-simple-parse ()
   (progn
