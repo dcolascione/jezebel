@@ -1,5 +1,7 @@
 (require 'jezebel-util)
 
+(declare (optimize (speed 3) (safety 0)))
+
 ;;
 ;; Purely functional AST built incrementally by parsing.
 ;;
@@ -9,8 +11,7 @@
   (:constructor jez--make-tree-node)
   (:copier nil)
   (:conc-name jez-tree-node--))
-  "Node of an N-ary purely-functional zippered tree.  Pure
-functional data structure."
+  "Node of an N-ary purely-functional zippered tree."
 
   ;; List of children of this node; updated lazily. jez-tree-node's
   ;; zippered list for this node is authoritative when it exists.
@@ -39,7 +40,7 @@ functional data structure."
   ;; Children of parent to the right of current; stored in forward
   ;; order
   right
-  
+
   ;; Parent jez-tree (not jez-tree-node!) or nil if we're at top
   parent
 

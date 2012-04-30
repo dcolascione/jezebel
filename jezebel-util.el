@@ -1,6 +1,8 @@
-;;;; Stuff from https://github.com/sroccaserra/emacs/blob/master/tools.el
 (require 'cl)
 
+(declare (optimize (speed 3) (safety 0)))
+
+;;;; Stuff from https://github.com/sroccaserra/emacs/blob/master/tools.el
 (defmacro -> (x &optional form &rest more)
   (cond ((not (null more))
          `(-> (-> ,x ,form) ,@more))
@@ -127,7 +129,7 @@ return DEFAULT."
             (error "struct %s has no slot %s" type slot))
           (ecase (car (get type 'cl-struct-type))
             (vector `(aref (jez-the ,type ,inst) ,idx))
-            (list `(nth ,idx (jez-the ,type ,inst)))))        
+            (list `(nth ,idx (jez-the ,type ,inst)))))
       orig)))
 
 (define-compiler-macro jez-set-slot-value (&whole orig type inst slot value)
@@ -250,7 +252,7 @@ return nil.  Fails to detect instances of structs with an
 (defmacro* define-functional-struct (name &rest orig-slots)
   "`defstruct' specialized for pure functional data structures.
 A structure is defined just as `defstruct' would, except that an
-additional copy-and-modify function is defined.  
+additional copy-and-modify function is defined.
 
 This copy-and-modify function permits copying and modifying an
 instance of the structure in one step.  If the structure is
@@ -270,7 +272,7 @@ generate.  The name defaults to copy-and-modify-NAME.
         struct-type
         named
         slots)
-    
+
     ;; Normalize name and extract the struct name symbol
     (when (symbolp name)
       (setf name (list name)))
@@ -303,23 +305,23 @@ generate.  The name defaults to copy-and-modify-NAME.
 
     (when (and (null named) (null struct-type))
       (setf named (intern (format "cl-struct-%s" name-symbol))))
-    
+
     (setf struct-type (ecase struct-type
                         ((vector nil) 'vector)
                         (list 'list)))
-    
+
     ;; Parse slots, first adding a dummy slot for the name if
     ;; necessary.
-    
+
     (when named
       (push 1 slots))
-    
+
     (dolist (slot orig-slots)
       ;; stringp test skips doc strings
       (when (not (stringp slot))
         (push (if (symbolp slot) slot (car slot))
               slots)))
-    
+
     (setf slots (reverse slots))
 
     ;; Turn off generation below if we don't actually have a copymod
@@ -329,7 +331,7 @@ generate.  The name defaults to copy-and-modify-NAME.
 
     ;; Generate the actual macros we'll use to do the copy-and-modify
     ;; operation.
-    
+
     `(progn
        (defstruct ,name ,@orig-slots)
        ,(functional-struct--inner
@@ -362,7 +364,7 @@ generate.  The name defaults to copy-and-modify-NAME.
     (when copymod-name
       `(progn
          (defmacro* ,copymod-name
-             (inst &key 
+             (inst &key
                    ,@(loop for slot in slots
                            for supp in slots-supplied
                            when (and slot (symbolp slot))
@@ -403,7 +405,7 @@ expansion of FORM.  Macro environment ENV is used for expansion."
 (defun functional-struct--vector (inst-sym slot-info-sym)
   `(loop
     with new-sym = (gensym "copymod-new")
-    
+
     for idx upfrom 0
     for (slot-name slot-value-form slot-supplied-p) in ,slot-info-sym
     when slot-supplied-p
@@ -415,7 +417,7 @@ expansion of FORM.  Macro environment ENV is used for expansion."
                        slot-value-form
                        cl-macro-environment)))
     into body
-    
+
     finally return
     `(let ((,new-sym (copy-sequence ,,inst-sym)))
        ,@body
@@ -440,7 +442,7 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     ;; N.B. if slot-supplied-p is nil, slot-value-form will be nil and
     ;; this expansion will be harmless. Also, orig-used will also be
     ;; nill in this case.
-    
+
     for (exp . orig-used) = (functional-struct--expand-anaphor
                              'orig
                              orig-sym

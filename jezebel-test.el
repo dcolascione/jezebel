@@ -7,8 +7,7 @@
 (require 'jezebel)
 
 (defconst jezt-simple-grammar
-  '((:include jez-root-grammar)
-    (top "hello")
+  '((top "hello")
     (foo bar qux)))
 
 (defun* jezt-hash-rmap (value
@@ -178,8 +177,7 @@ no such node exists in PARSER."
      (jezt-try-parse jezt-simple-grammar "hello"))))
 
 (ert-deftest jezt-repetition-parse ()
-  (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (* "b") "c"))))
+  (let ((grammar '((top "a" (* "b") "c"))))
     (should
      (jezt-try-parse grammar "abc"))
     (should
@@ -190,8 +188,7 @@ no such node exists in PARSER."
      (jezt-try-parse grammar "ac"))))
 
 (ert-deftest jezt-ochoice-parse ()
-  (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (/ "b" "c" "x") "d"))))
+  (let ((grammar '((top "a" (/ "b" "c" "x") "d"))))
     (should
      (jezt-try-parse grammar "abd"))
     (should-not
@@ -202,16 +199,13 @@ no such node exists in PARSER."
      (jezt-try-parse grammar "ac"))))
 
 (ert-deftest jezt-ast-construction ()
-  (let ((grammar '((:include jez-root-grammar)
-                   (top (ast-node 'hello))
-                   )))
+  (let ((grammar '((top (ast-node 'hello "hello")))))
     (should
      (jezt-try-parse grammar "hello"))))
 
 (defun foo ()
   (interactive)
-  (let ((grammar '((:include jez-root-grammar)
-                   (top "a" (ochoice "b" "c") "d"))))
+  (let ((grammar '((top "a" (ochoice "b" "c") "d"))))
     (jezt-try-parse grammar "ad")))
 
 (provide 'jezebel-test)

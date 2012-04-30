@@ -511,6 +511,37 @@ in its place."
     new-irn))
 
 
+;;; -----------
+;;; AST support
+;;; -----------
+
+(defun jez--restore-ast (state)
+  (setf (jez-state--ast state)
+        (jez-state-pop-undo state))
+  nil)
+
+(defun jez--push-ast-node (state kind)
+  (let ((ast (jez-state--ast state)))
+    ;; Restore the old ast if we ever roll back
+    (jez-add-undo state
+      ast
+      #'jez--restore-ast)
+    ;; Add a new node to the ast and make
+    ;; it current.
+    (setf (jez-state--ast state)
+          (jez-tree-append-child
+               ast
+               (list 'begin (point)
+                     'kind kind)))))
+
+(defun jez--pop-ast-node (state)
+  (setf (jez-state--ast state)
+        (jez-tree-up
+         (jez-tree-put
+          (jez-state--ast state)
+          'end (point)))))
+
+
 ;;; -------
 ;;; Parsing
 ;;; -------
