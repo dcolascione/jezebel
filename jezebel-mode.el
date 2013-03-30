@@ -4,7 +4,8 @@
 
 ;;
 ;; The buffer changes. We get a before-change-hook, and store the
-;; dirty region information for later. We mark our global AST dirty.
+;; dirty region information for after-change-hook. We mark our global
+;; AST dirty.
 ;; 
 ;; Then, font-lock does its thing and asks us to expand the
 ;; after-change region. Here, we build a new AST for the current
@@ -53,6 +54,9 @@
 
 (defun jez-font-lock-matcher (limit)
   "Font-lock matcher that applies highlights for a jezebel AST."
+
+  ;; Get the jezebel AST for this buffer
+  
   
   ;; Tell font-lock not to try to apply any highlights
   nil)

@@ -5,6 +5,7 @@
 
 (require 'jezebel-test-util)
 (require 'jezebel)
+(require 'ert)
 
 (defconst jezt-simple-grammar
   '((top "hello")

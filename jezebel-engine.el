@@ -26,7 +26,7 @@
             (:conc-name jez-parser--))
 
   "Compiled representation of a grammar that can be used to
-create jez-state that, in turn, parse buffers."
+create jez-state that, in turn, parses buffers."
 
   ;; Initial state symbol for this parser.
   (initial-state nil)

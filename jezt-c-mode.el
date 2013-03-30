@@ -4,15 +4,13 @@
   '((:section :ast-node)
 
     (top
-     (: (* optws)
-        (* (: optws toplevel-declaration optws))
-        (* optws)))
+     (* (: opt-ws toplevel-declaration opt-ws)))
 
     (toplevel-declaration
      (: variable-declaration))
 
     (variable-declaration
-     (: type ws variable-name optws ";"))
+     (: type ws variable-name opt-ws ";"))
 
     (type
      (/ "int" "double" "char"))
@@ -33,10 +31,7 @@
     (opt-ws
      (* (in " \t\n")))
 
-    (:section :font)
-
-    (type font-lock-type-face)
-    (variable-name font-lock-variable-name-face)))
+))
 
 (defconst jezt-cmode-font-lock-keywords
   '(jez-font-lock-matcher)
@@ -54,3 +49,5 @@
 (define-derived-mode jezt-cmode fundamental-mode "jezt-c"
   (jez-setup-buffer jezt-cmode-grammar)
   (setf font-lock-defaults jezt-cmode-font-lock-defaults))
+
+(provide 'jezt-c-mode)
