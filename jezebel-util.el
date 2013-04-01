@@ -39,7 +39,7 @@
 (defmacro jez-the (type form)
   "Like `the', except that we assert that FORM is a TYPE."
   (setf form (cl-macroexpand-all form cl-macro-environment))
-  (if (cl-simple-expr-p form)
+  (if (cl--simple-expr-p form)
       `(progn
          (check-type ,form ,type)
          ,form)

@@ -65,7 +65,7 @@ no such node exists in PARSER."
 
 (defun* jezt-describe-state (state stepno point)
   (princ (format "step %d point:%d\n" stepno point))
-  (jez-with-slots (and-stack or-stack or-stack-pos)
+  (jez-with-slots (and-stack or-stack)
       (jez-state state)
     
     (princ (format "and-stack:%S\n" and-stack))
@@ -77,9 +77,8 @@ no such node exists in PARSER."
                (princ "\n")))
 
     (princ "\nor-stack:\n")
-
-    (loop for i from (1- or-stack-pos) downto 0
-          for val = (aref or-stack i)
+    (loop for val in or-stack
+          for i upfrom 0
           do (progn
                (princ (format " %2d: " i))
                (jezt-describe-stackent nil val)
@@ -117,7 +116,7 @@ no such node exists in PARSER."
            point)
 
       (when debug
-        (setf debug-buf (get-buffer-create "*jdebug*"))
+        (setf debug-buf (get-buffer-create "*jezt*"))
         (select-window (get-buffer-window "*jezt*" 'visible)))
       
       (while (progn

@@ -45,44 +45,13 @@ create jez-state that, in turn, parses buffers."
   (reach 0)
 
   ;; Stack states to enter when backtracking
-  (or-stack (make-vector 256 nil))
-  (or-stack-pos 0)
+  or-stack
 
   ;; Stack of states to enter when successful
   and-stack
 
   ;; The current AST
   (ast (jez-make-empty-tree)))
-
-(defun* jez--double-vector (vec &optional init)
-  "Return a copy of vector VEC of twice its length.  The additional
-elements are set to INIT."
-  (loop
-   with new-vec = (make-vector (* (length vec) 2) init)
-   for i from 0 to (length vec)
-   do (setf (aref new-vec i) (aref vec i))
-   finally return new-vec))
-
-(defmacro jez--push-vector (vec-place pos-place item)
-  "Add ITEM to the extensible vector given by VEC-PLACE and
-POS-PLACE, expanding the vector if appropriate.
-
-N.B VEC-PLACE and POS-PLACE may be evaluated more than once.
-"
-  `(progn
-     (when (<= (length ,vec-place) ,pos-place)
-       (assert (= (length ,vec-place) ,pos-place))
-       (setf ,vec-place (jez--double-vector ,vec-place)))
-     (setf (aref ,vec-place
-                 (prog1 ,pos-place (incf ,pos-place)))
-           ,item)))
-
-(defmacro jez--pop-vector (vec-place pos-place)
-  "Return and remove the value at the end of the extensible
-vector given by VEC-PLACE and POS-PLACE."
-  `(prog1
-     (aref ,vec-place (decf ,pos-place))
-     (assert (>= ,pos-place 0))))
 
 (defun* jez-state-reach-forward (state new-reach)
   (jez-with-slots (reach) (jez-state state)
@@ -92,42 +61,28 @@ vector given by VEC-PLACE and POS-PLACE."
 
 (defun* jez-backtrack (state)
   "Back up to most recent choice point in STATE."
-  (symbol-macrolet ((os (jez-state--or-stack state))
-                    (osp (jez-state--or-stack-pos state)))
-    (assert (> osp 0))
-    (while (not (funcall (aref os (decf osp)) state)))))
+  (jez-with-slots (or-stack) (jez-state state)
+    (while (not (funcall (pop or-stack) state)))))
 
-(defun* jez-add-undo-1 (state item)
-  "Add an undo record to STATE.
+(defun* jez-add-undo (state &rest items)
+  "Add undo record to STATE.
 
 To backtrack, we pop the first item from STATE's or-stack and
 call it as a function.  If this function returns nil, we repeat
 the process.  The called function may pop additional values from
 the or-stack."
-  (jez--push-vector (jez-state--or-stack state)
-                    (jez-state--or-stack-pos state)
-                    item))
 
-(defun* jez-add-undo (state &rest items)
-  "Add ITEMS to STATE's undo stack.  The last item will be at the
-top of the stack."
-  (dolist (item items)
-    (jez-add-undo-1 state item)))
+  (jez-with-slots (or-stack) (jez-state state)
+    (dolist (item items)
+      (message "XXX %S" item)
+      (push item or-stack))))
 
-(define-compiler-macro jez-add-undo (state &rest items)
-  "Add entries to a state's undo stack."
-  `(symbol-macrolet ((os (jez-state--or-stack state))
-                     (osp (jez-state--or-stack-pos state)))
-     (when (<= (+ osp ,(length items)) (length os))
-       (setf os (jez--double-vector os)))
-     ,@(loop for item in items
-             collect `(aset os (incf osp) ,item))))
 (put 'jez-add-undo 'lisp-indent-function 1)
 
 (defun* jez-state-pop-undo (state)
   "Remove an entry from a state's undo stack and return it."
-  (jez--pop-vector (jez-state--or-stack state)
-                   (jez-state--or-stack-pos state)))
+  (jez-with-slots (or-stack) (jez-state state)
+      (pop or-stack)))
 
 (defun* jez--undo-handle-choice-point (state)
   "Handle undoing up to a choice point."
@@ -163,7 +118,6 @@ doesn't match, we'll backtrack."
   (jez--make-state
    :reach (jez-state--reach state)
    :or-stack (copy-sequence (jez-state--or-stack state))
-   :or-stack-pos (jez-state--or-stack-pos state)
    :and-stack (jez-state--and-stack state)
    :ast (jez-state--ast state)))
 
