@@ -74,7 +74,6 @@ the or-stack."
 
   (jez-with-slots (or-stack) (jez-state state)
     (dolist (item items)
-      (message "XXX %S" item)
       (push item or-stack))))
 
 (put 'jez-add-undo 'lisp-indent-function 1)
