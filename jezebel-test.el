@@ -203,9 +203,4 @@ no such node exists in PARSER."
     (should
      (jezt-try-parse grammar "hello"))))
 
-(defun foo ()
-  (interactive)
-  (let ((grammar '((top "a" (ochoice "b" "c") "d"))))
-    (jezt-try-parse grammar "ad")))
-
 (provide 'jezebel-test)

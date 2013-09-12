@@ -1,3 +1,5 @@
+;; -*- lexical-binding: t -*-
+
 (require 'jezebel-test-util)
 (require 'jezebel-util)
 

@@ -1,38 +1,11 @@
-(require 'cl)
+;; -*- lexical-binding: t -*-
+
+(eval-when-compile
+  (require 'cl))
+
+(require 'cl-lib)
 
 (declare (optimize (speed 3) (safety 0)))
-
-;;;; Stuff from https://github.com/sroccaserra/emacs/blob/master/tools.el
-(defmacro -> (x &optional form &rest more)
-  (cond ((not (null more))
-         `(-> (-> ,x ,form) ,@more))
-        ((not (null form))
-         (if (sequencep form)
-             `(,(first form) ,x ,@(rest form))
-           (list form x)))
-        (t x)))
-
-(defmacro ->> (x form &rest more)
-  (cond ((not (null more)) `(->> (->> ,x ,form) ,@more))
-        (t (if (sequencep form)
-               `(,(first form) ,@(rest form) ,x)
-             (list form x)))))
-
-(defmacro -?> (x form &rest more)
-  (cond ((not (null more)) `(-?> (-?> ,x ,form) ,@more))
-        (t (if (sequencep form)
-               `(if (null ,x) nil
-                  (,(first form) ,x ,@(rest form)))
-             `(if (null ,x) nil
-                ,(list form x))))))
-
-(defmacro -?>> (x form &rest more)
-  (cond ((not (null more)) `(-?>> (-?>> ,x ,form) ,@more))
-        (t (if (sequencep form)
-               `(if (null ,x) nil
-                  (,(first form) ,@(rest form) ,x))
-             `(if (null ,x) nil
-                ,(list form x))))))
 
 ;;;; Misc.
 
@@ -474,7 +447,5 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     finally return
     `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
        (list* ,@body ,tmp-sym))))
-
-
 
 (provide 'jezebel-util)
