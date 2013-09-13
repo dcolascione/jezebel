@@ -56,7 +56,11 @@
   ;; entries in each set are terminal symnos.  Created lazily; query
   ;; with jez-lr-FIRST-1.  (We need only the non-terminals because the
   ;; FIRST set of a terminal t is always just { t }).
-  FIRST-info)
+  FIRST-info
+
+  
+
+  )
 
 (defun jez-lr-number-symbols (lr)
   "Return the total number of symbols in LR."
@@ -390,6 +394,151 @@ jez-epsilon-sym for the empty production.
                (setf (jez-lr-FIRST-info lr) FIRST-info))
              (aref FIRST-info (- symno min-nonterm)))))))
 
+(defun jez-lr0-item-< (a b)
+  "Compare two LR(0) items."
+  (cond ((< (car a) (car b)) t)
+        ((> (car a) (car b)) nil)
+        ((< (cdr a) (cdr b)) t)))
+
+(defun jez-lr0-closure (lr items)
+  "Close over the given LR(0) items.
+Each item is a cons (PRODNO . DOTPOS).  Return a new list of
+items."
+
+  (let ((productions (jez-lr-productions lr))
+        (to-process items)
+        (item-to-close nil)
+        (next-productions nil)
+        (closed-items (copy-sequence items))
+        (next-item nil))
+
+    (while to-process
+      (setf item-to-close (pop to-process))
+
+      ;; The production (entry in the productions array) is a cons
+      ;; (LHS . RHS), where LHS is the non-terminal being produced and
+      ;; RHS is a list of symbols that LHS generates. Here, we
+      ;; determine the item to the right of the dot in one step.  If
+      ;; the dot is at the end of the production, NTH below returns
+      ;; nil.
+
+      ;; next-productions is a list of production numbers that can
+      ;; produce next-symno.  Because next-productions is nil if nth
+      ;; returned nil (dot at end) or a terminal, we only add
+      ;; nonterminals in the loop below.
+
+      (setf next-productions
+            (jez-lr-production-rules-for-symbol
+             lr
+             (nth (1+ (cdr item-to-close))
+                            (aref productions (car item-to-close)))))
+
+      (while next-productions
+        (setf next-item (cons (pop next-productions) 0))
+        (unless (member next-item closed-items)
+          (push next-item closed-items)
+          (push next-item to-process))))
+
+    (sort closed-items #'jez-lr0-item-<)))
+
+(defun jez-lr0-goto (lr items symno)
+  "Compute the goto function on a set of LR(0) items.
+Each item is a cons (PRODNO . DOTPOS).  This routine returns a
+closed set of LR(0) items."
+
+  (let ((productions (jez-lr-productions lr))
+        (item nil)
+        (goto-set nil))
+
+    (while items
+      (setf item (pop items))
+      (when (eq symno (nth (1+ (cdr item)) (aref productions (car item))))
+        (push (cons (car item) (1+ (cdr item))) goto-set)))
+
+    (jez-lr0-closure lr goto-set)))
+
+(defun jez-lr0-kernel (items)
+  "Compute the kernel (dotpos nonzero) for an LR(0) state."
+
+  (loop for item in items
+        for (prodno . dotpos) = item
+        if (or (= prodno 0) (> dotpos 0))
+        collect item))
+
+(defun jez-compute-lr0-states (lr)
+  "Compute the LR(0) DFA for grammar LR.
+Return (STATES . TRANSITIONS).
+
+STATES is an ordered list of states, where each state is an
+ordered list of LR(0) items, each item being of the form (PRODNO
+. DOTPOS).
+
+TRANSITIONS is an un-ordered list of transitions of the
+form (STATENO TERMNO NEW-STATENO), where STATENO is the current
+state, TERMNO is the symbol on which to transition, and
+NEW-STATENO is the number of the state to which to transition.
+The number of a state is its position in STATES."
+
+  (let ((stateno 0)
+        (statehash (make-hash-table :test 'equal))
+        (nsymbols (jez-lr-number-symbols lr))
+        (to-process nil)
+        (current-state nil)
+        (current-stateno nil)
+        (next-state nil)
+        (next-stateno nil)
+        (state-list nil)
+        (transitions nil))
+
+    ;; Each entry on the to-process list is a cons of (STATENO
+    ;; . STATE).  statehash maps states (which are EQUAL-equal if they
+    ;; are logically equal) to their state numbers so that we can
+    ;; quickly find the number of a state we've already added.
+
+    ;; N.B. Because the initial production of our grammar is always
+    ;; production number zero, and the dot is always at the left end
+    ;; of this production in the initial state, we can hardcode '(0 0)
+    ;; below.
+
+    (setf current-state (jez-lr0-closure lr '((0 . 0))))
+    (push (cons 0 current-state) to-process)
+    (push current-state state-list)
+    (puthash current-state 0 statehash)
+
+    (while to-process
+      (setf current-state (pop to-process))
+      (setf current-stateno (pop current-state))
+
+      ;; For each symbol symno in our grammar, see whether any item in
+      ;; current-state is about to generate that symbol, and if so,
+      ;; build a new state for the transition.
+
+      (dotimes (symno nsymbols)
+        (setf next-state (jez-lr0-goto lr current-state symno))
+        (when next-state ; Skip impossible transitions
+          (setf next-stateno (gethash next-state statehash))
+
+          ;; If we've already generated the destination state, just
+          ;; add a transition from the current state to the next
+          ;; state.  We don't need to process the new state again.  We
+          ;; process each state exactly once, so we're guaranteed not
+          ;; to add duplicates to the transitions list.  If the state
+          ;; is new to us, then of course we need to process the new
+          ;; state.
+
+          (unless next-stateno
+            (setf next-stateno (incf stateno))
+            (push next-state state-list)
+            (push (cons next-stateno next-state) to-process)
+            (puthash next-state next-stateno statehash))
+
+          (push (list current-stateno symno next-stateno) transitions))))
+
+    ;; Done.  Reverse the state list because we accumulated it by
+    ;; consing onto the front instead of appending to the end.
+
+    (list (nreverse state-list) (nreverse transitions))))
+
 (defun jez-lr-nclosure-1 (lr items)
   "Run one iteration of the closure algorithm.
 Return a list of items to add to items."
@@ -516,64 +665,6 @@ rule by which to reduce.
          (throw 'found k)))
      (jez-lr-sym->symno lr))
     (error "could not find symbol for symno %s" symno)))
-
-(defun jez-pp-hr-symbol (lr symno)
-  (cond
-   ((eq symno jez-epsilon-sym) "\u03B5")
-   ((eq symno jez-end-sym) "#")
-   (t (symbol-name (jez-lr-lisp-symbol-for-symno
-                    lr symno)))))
-
-(defun* jez-pp-production-rule (lr rule &optional stream &key dotpos lahead)
-  (let* ((lhs (car rule))
-         (rhs (cdr rule))
-         (rhsidx 0))
-    (princ (format "%15s \u2192 "
-                   (jez-lr-lisp-symbol-for-symno lr lhs))
-           stream)
-    (princ (mapconcat
-            (lambda (symno)
-              (prog1
-                  (concat
-                   (if (eql dotpos rhsidx) "\u00B7 ")
-                   (jez-pp-hr-symbol lr symno))
-                (incf rhsidx)))
-            rhs " ")
-           stream)
-    (if (eql dotpos rhsidx)
-        (princ " \u00B7" stream))
-    (if lahead
-        (princ (format "  [%s]" (jez-pp-hr-symbol lr lahead))
-               stream))
-    (princ "\n" stream)))
-
-(defun jez-pp-lr (lr &optional stream)
-  (princ (format "Production rules:\n") stream)
-  (loop for rule across (jez-lr-productions lr)
-        for prodno upfrom 0
-        do (princ (format "  %03d: " prodno) stream)
-        and do (jez-pp-production-rule lr rule stream)))
-
-(defun jez-pp-item (lr item &optional stream)
-  (princ (format "[%3s %3s %3s] "
-                 (aref item 0)
-                 (aref item 1)
-                 (aref item 2))
-         stream)
-  (jez-pp-production-rule
-   lr
-   (aref (jez-lr-productions lr) (jez-lr-item-prodno item))
-   stream
-   :dotpos (jez-lr-item-dotpos item)
-   :lahead (jez-lr-item-lahead item)))
-
-(defun jez-pp-state (lr state &optional stream)
-  (princ "LR State Items:\n" stream)
-  (loop for item in (jez-lr-state-items state)
-        do (progn
-             (princ "  " stream)
-             (jez-pp-item lr item stream)))
-  (princ "End\n" stream))
 
 (defun jez-make-lr-table (grammar)
   "Generate an LR parse table from GRAMMAR.
