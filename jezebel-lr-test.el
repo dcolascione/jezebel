@@ -56,11 +56,22 @@ of a production."
           collect (apply #'jezt-make-lr0-item lr hr-item))
     #'jez-lr0-item-<)))
 
+(defun jezt-lr-lisp-symbol-for-symno (lr symno)
+  "Find the lisp symbol for symbol numbered SYMNO in LR."
+
+  (catch 'found
+    (maphash
+     (lambda (k v)
+       (when (eq v symno)
+         (throw 'found k)))
+     (jez-lr-sym->symno lr))
+    (error "could not find symbol for symno %s" symno)))
+
 (defun jezt-pp-hr-symbol (lr symno)
   (cond
    ((eq symno jez-epsilon-sym) "\u03B5")
    ((eq symno jez-end-sym) "#")
-   (t (symbol-name (jez-lr-lisp-symbol-for-symno
+   (t (symbol-name (jezt-lr-lisp-symbol-for-symno
                     lr symno)))))
 
 (defun* jezt-pp-production-rule (lr rule &optional stream &key dotpos lahead)
@@ -68,7 +79,7 @@ of a production."
          (rhs (cdr rule))
          (rhsidx 0))
     (princ (format "%15s \u2192 "
-                   (jez-lr-lisp-symbol-for-symno lr lhs))
+                   (jezt-lr-lisp-symbol-for-symno lr lhs))
            stream)
     (princ (mapconcat
             (lambda (symno)
@@ -201,95 +212,6 @@ of a production."
          'A)))
 
     toylr))
-
-(ert-deftest jezt-lr-FIRST ()
-    (let* ((lr (jez-lr-slurp-grammar
-                '((A a b c)
-                  (B B b)
-                  (B b)
-                  (B C b)
-                  (C)
-                  (C B c)
-                  (B))
-                jezt-lr-toy-terminals
-                'A))
-           (sym->symno (jez-lr-sym->symno lr))
-           (testdata
-            '(((A)   . (a))
-              ((C)   . (b nil))
-              ((B)   . (b nil))
-              ((B A) . (b a))
-              ((A B) . (a)))))
-
-      (loop for (input . expected) in testdata
-            for in-munge = (loop for x in input
-                                 collect (or (gethash x sym->symno)
-                                             (error "unknown symbol: %s" x)))
-            for out-munge =
-            (jez-make-int-set
-             (loop for x in expected
-                   collect (or (gethash x sym->symno)
-                               (if (not x) jez-epsilon-sym)
-                               (error "unknown symbol: %s" x))))
-
-
-            for FIRST = (jez-lr-FIRST lr in-munge)
-            do (assert (equal FIRST out-munge) t))))
-
-(ert-deftest jezt-lr-closure ()
-  (let* ((lr (jez-lr-slurp-grammar
-              '((S B)
-                (A a b c)
-                (B B b)
-                (B b)
-                (B C b)
-                (C)
-                (C B c)
-                (B))
-              jezt-lr-toy-terminals
-              'S))
-         (item (jez-make-lr-item :prodno 0
-                                 :dotpos 0
-                                 :lahead -2))
-           (lrs (jez-make-lr-state)))
-    (jez-lr-state-add-item lrs item)
-    (jez-lr-nclosure lr lrs)
-
-    (should (equal (jez-lr-state-items lrs)
-                  '( [  0   0  -2]
-                     [  1   0  -2]
-                     [  3   0  -2]
-                     [  3   0   2]
-                     [  3   0   3]
-                     [  4   0  -2]
-                     [  4   0   2]
-                     [  4   0   3]
-                     [  5   0  -2]
-                     [  5   0   2]
-                     [  5   0   3]
-                     [  6   0   2]
-                     [  7   0   2]
-                     [  8   0  -2]
-                     [  8   0   2]
-                     [  8   0   3])))))
-
-
-(ert-deftest jez-goto ()
-  (let* ((lr (jez-lr-slurp-grammar
-              '((S C C)
-                (C c C)
-                (C d))
-              jezt-lr-toy-terminals
-              'S))
-         (item (jez-make-lr-item :prodno 0
-                                   :dotpos 0
-                                   :lahead -2))
-         (lrs (jez-make-lr-state)))
-    (jez-lr-state-add-item lrs item)
-    (jez-lr-nclosure lr lrs)
-    (setf lrs (jez-lr-goto lr lrs (gethash 'd (jez-lr-sym->symno lr))))))
-
-
 
 (ert-deftest jez-lr0-closure ()
   (let* ((lr (jez-lr-slurp-grammar
@@ -447,25 +369,12 @@ of a production."
         (error "unexpected states found")))))
 
 (let* ((lr (jez-lr-slurp-grammar
-              '((S L = R)
-                (S R)
-                (L * R)
-                (L i)
-                (R L))
+              '((A B C)
+                (C c)
+                (B))
 
-              '((= . 0)
-                (* . 1)
-                (i . 2))
+              jezt-lr-toy-terminals
 
-              'S)))
+              'A)))
 
-    (destructuring-bind (states transitions) (jez-compute-lr0-states lr)
-
-      ;; We should have no duplicate states and no duplicate transitions.
-
-      (should (equal states (remove-duplicates states :test 'equal)))
-      (should (equal transitions (remove-duplicates transitions :test 'equal)))
-
-      ;; Make sure we generate all the states we expect
-
-      ))
+  (jez-make-lalr-parser lr))

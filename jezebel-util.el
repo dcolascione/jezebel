@@ -7,19 +7,22 @@
 
 (declare (optimize (speed 3) (safety 0)))
 
+
 ;;;; Misc.
 
-(defmacro jez-the (type form)
+(defmacro* jez-the (&environment env type form)
   "Like `the', except that we assert that FORM is a TYPE."
-  (setf form (cl-macroexpand-all form cl-macro-environment))
-  (if (cl--simple-expr-p form)
-      `(progn
-         (check-type ,form ,type)
-         ,form)
-    (let ((value-sym (gensym "jez-the")))
-      `(let ((,value-sym ,form))
-         (check-type ,value-sym ,type)
-         ,value-sym))))
+  (setf form (cl-macroexpand-all form env))
+  (list 'the
+        type
+        (if (cl--simple-expr-p form)
+            `(progn
+               (check-type ,form ,type)
+               ,form)
+          (let ((value-sym (gensym "jez-the")))
+            `(let ((,value-sym ,form))
+               (check-type ,value-sym ,type)
+               ,value-sym)))))
 
 (deftype jez-list-of-type (item-type)
   "A type representing a Lisp list of ITEM-TYPE."
@@ -37,19 +40,6 @@
              (puthash key value dest))
            src))
 
-;;; Struct access functions and macros.  N.B. These work properly only
-;;; if a struct STRUCT has a type predicate STRUCT-P, which is the
-;;; default.
-
-(defun* jez--get-slot-info (type slot)
-  "For struct TYPE, return (IDX . INFO) for SLOT."
-  (loop
-   for (slot-name . opts) in (get type 'cl-struct-slots)
-   for idx upfrom 0
-   when (eq slot-name slot)
-   return (list* idx slot-name opts)
-   finally return nil))
-
 (eval-and-compile
   (defun* jez--abstract-eval (form &optional default env)
     "If FORM has a value known at compile time, return it.  Otherwise,
@@ -64,6 +54,20 @@ return DEFAULT."
           ((memq form '(nil t))
            form)
           (t default))))
+
+
+;;; Struct access functions and macros.  N.B. These work properly only
+;;; if a struct STRUCT has a type predicate STRUCT-P, which is the
+;;; default.
+
+(defun* jez--get-slot-info (type slot)
+  "For struct TYPE, return (IDX . INFO) for SLOT."
+  (loop
+   for (slot-name . opts) in (get type 'cl-struct-slots)
+   for idx upfrom 0
+   when (eq slot-name slot)
+   return (list* idx slot-name opts)
+   finally return nil))
 
 (defun* jez-slot-value (type inst slot)
   "Return the value of SLOT in struct INST of TYPE."
@@ -447,5 +451,82 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     finally return
     `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
        (list* ,@body ,tmp-sym))))
+
+
+;;;; Specializable function definitions.  During compilation, we
+;;;; generate different code for each call site --- like defsubst, but
+;;;; better.
+
+(defconst jez-subst-unsafe (gensym "unsafe-subst"))
+
+(defun jez-subst-value (form var val environment)
+  "Decide whether it is safe to substitute VAL for VAR in FORM.
+ENVIRONMENT is the lexical macro environment.
+
+A form is unsafe to substitute if either
+
+  1) it is not a compile-time constant, or
+  2) FORM modifies the VAR binding, e.g., (setq VAR nil).
+
+If the substitution is safe, this routine returns the value to be
+substituted.  Otherwise, it returns the symbol stored in
+`jez-subst-unsafe'."
+
+  
+
+  )
+
+(defun jez-specialize-form (bindings form &optional environment)
+  "Specialize a form by substitution.
+
+For all (SYM VAL) in BINDINGS, substitute SYM with VAL in FORM if
+`jez-subst-value' tells us it's safe to do so.  Otherwise,
+let-bind SYM to VAL around FORM.
+
+FORM promises not to directly modify (i.e., setq/setf) any SYM in
+BINDING.  If FORM breaks this promise, callers can see values
+change unexpectedly."
+
+  (loop for (sym val) in bindings
+        for newsym = (cl-gensym "specialize")
+        for newval = (jez-subst-value form sym val environment)
+
+        if (eq newval jez-subst-unsafe)
+        collect (list newsym val) into value-lets
+        and collect (list sym newsym) into macro-lets
+        else
+        collect (if (not (eq sym val)) (list sym val)) into macro-lets
+
+        finally return
+        `(let ,value-lets
+           (symbol-macrolet ,(delq nil macro-lets)
+             ,form))))
+
+(defmacro jez-define-specializing-function (name arglist &rest body)
+  "Define a function that's specialized into each call site.
+
+
+
+
+"
+
+  (let ((specializing-name (intern (format "%s-specializing" name)))
+        (env-sym (gensym "env")))
+
+    `(progn
+       (defun* ,name ,arglist ,@body)
+       (defmacro* ,specializing-name (&environment ,env-sym ,@arglist)
+         (jez-specialize-form
+          (list
+           ,@(loop for var in (cl--arglist-args arglist)
+                   collect `(list ',var ,var)))
+          '(progn ,@body)
+          ,env-sym))
+       ',name)))
+
+(setf (symbol-plist 'jez-define-specializing-function)
+      (copy-sequence
+       (symbol-plist 'defun)))
+(put 'jez-define-specializing-function 'lisp-indent-function 'defun)
 
 (provide 'jezebel-util)
