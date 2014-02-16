@@ -372,9 +372,7 @@ items within each state has no significance except to ensure that
 equal states are EQUAL.
 
 TRANSITIONS is a jez-txdb object that describes the transitions.
-
 "
-
   (let ((stateno 0)
         (statehash (make-hash-table :test 'equal))
         (nsymbols (jez-lr-number-symbols lr))
@@ -430,10 +428,8 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
 
           (push (jez-make-tx current-stateno symno next-stateno)
                 transitions))))
-
     ;; Done.  Reverse the state list because we accumulated it by
     ;; consing onto the front instead of appending to the end.
-
     (list (apply #'vector (nreverse state-list))
           (jez-make-txdb
            (nreverse transitions)
@@ -595,9 +591,7 @@ FP is a Lisp function mapping from elements of X to int-sets.
 Return F, a Lisp vector describing a function from elements of X
 to the int-sets FP returned, propagated across all relationships
 R.
-
 "
-
   (loop with S = (cons nil 0) ; car: stack; cdr: stack size
         with N = (make-vector nr-X 0)
         with F = (make-vector nr-X nil)
@@ -616,23 +610,18 @@ R.
 
 (defun jez-traverse (x N S F nr-X R FP)
   "Helper function for jez-digraph."
-
   (let (d)
     (push x (car S))
     (setf d (incf (cdr S)))
     (setf (aref N x) d)
-
     (dolist (y (funcall R x))
       (when (eq (aref N y) 0)
         (jez-traverse y N S F nr-X R FP))
-
       (setf (aref N x) (min (aref N x) (aref N y)))
-
       ;; (F x) <- (F x) U (F y)
       (jez-int-set-union
        (jez-traverse-lazy-fetch FP F x)
        (jez-traverse-lazy-fetch FP F y)))
-
     (when (eq (aref N x) d)
       (let ((top (caar S)))
         (setf (aref N top) most-positive-fixnum)
@@ -641,13 +630,11 @@ R.
           (while (not (eq e x))
             (setf top (caar S))
             (setf (aref N top) most-positive-fixnum)
-
             (unless (eq top x)
               ;; F(Top of S) <- (F x)
               (setf (aref F top)
                     (jez-copy-int-set
                      (jez-traverse-lazy-fetch FP F x))))
-
             (setf e (jez-traverse-stack-pop S))))))))
 
 (defun jez-reversed-rhs (lr prodno)
@@ -660,27 +647,21 @@ R.
 
 (defun jez-lr-LOOKBACK-impl (P q lr state->tx* state->ntt ntt)
   "Implement LOOKBACK.
-
 P is a production number. Q is a target state number.  LR is a
 jez-lr object.  state->tx* indexes transition objects by target
 state number.  state->ntt indexes nonterminal transition numbers
 by source state number.  ntt maps nonterminal transition numbers
-to transition objects.
-
+to transition objects.
 "
-
   (let* ((path (jez-reversed-rhs lr P))
          (goal-nontermno (jez-lhs lr P))
          (current-states (list q))
          symno)
-
     ;; Run the DFA backward to find out from what states we can spell
     ;; path and end up at q.  Note that the DFA run backward is
     ;; actually an NFA, and we're doing direct NFA simulation here.
-
     (when (eq (car path) jez-epsilon-sym)
       (setf path nil))
-
     (while path
       (setf symno (pop path))
       (setf current-states
@@ -690,15 +671,12 @@ to transition objects.
                         do (assert (eq (jez-tx-to tx-to-sn) sn))
                         if (eq (jez-tx-via tx-to-sn) symno)
                         collect (jez-tx-from tx-to-sn)))))
-
     ;; Now we have a set of states p that start our production;
     ;; simulate a "shift" by looking for each p transitions over the
     ;; symbol we're about to reduce in state q.
-
     (setf current-states
           (delete-consecutive-dups
            (sort current-states #'<)))
-
     (loop for sn in current-states
           for shift = (loop for ntt-number in (aref state->ntt sn)
                             for tx = (aref ntt ntt-number)
@@ -809,8 +787,7 @@ LR0-item conses.  TRANSITIONS is XXX.  Lookaheads.
          ;; 3-tuples, where B = C in the above table and β is the
          ;; possibly-empty string of symbols in production P that
          ;; appear before i.  For each tuple, we run the state machine
-         ;; backward and
-         ;;
+         ;; backward and oh god I forgot halp.
 
          )
 
@@ -847,16 +824,16 @@ possible: we build arrays indexed by TERMNO.
 "
 
   (let (lr start rules terminals)
-
     ;; Vectorize the terminals and production rules.
-
     (setf rules (first grammar))
     (setf terminals (second grammar))
     (setf lr (jez-lr-slurp-grammar rules terminals start))
 
-    ;; Construct the LR(0) kernels.
+    ;; Construct the LR(1) table.
 
+    ;; Reduce to LALR(1)
 
+    
 
     )
 
