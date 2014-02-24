@@ -69,12 +69,12 @@ of a production."
 
 (defun jezt-pp-hr-symbol (lr symno)
   (cond
-   ((eq symno jez-epsilon-sym) "\u03B5")
-   ((eq symno jez-end-sym) "#")
+   ((eq symno (jez-lr-epsilon-sym lr)) "\u03B5")
+   ((eq symno (jez-lr-end-sym lr)) "#")
    (t (symbol-name (jezt-lr-lisp-symbol-for-symno
                     lr symno)))))
 
-(defun* jezt-pp-production-rule (lr rule &optional stream &key dotpos lahead)
+(cl-defun jezt-pp-production-rule (lr rule &optional stream &key dotpos lahead)
   (let* ((lhs (car rule))
          (rhs (cdr rule))
          (rhsidx 0))
@@ -140,57 +140,6 @@ of a production."
              (princ " " stream)
              (jezt-pp-lr0-item lr item)))
   (princ "End\n" stream))
-
-(ert-deftest jezt-int-set-basic ()
-  (let (is)
-    (setf is (jez-make-int-set))
-    (should (jez-int-set-empty-p is))
-    (should (not (jez-int-set-member-p is 42)))
-    (should (not (jez-int-set-remove is 33)))
-
-    (should (jez-int-set-add is -1))
-    (should (not (jez-int-set-add is -1)))
-    (should (not (jez-int-set-empty-p is)))
-    (should (jez-int-set-member-p is -1))
-    (should (not (jez-int-set-remove is -1)))
-    (should (not (jez-int-set-member-p is -1)))))
-
-(ert-deftest jezt-int-set-union ()
-  (let (is is2)
-    (setf is (jez-make-int-set '(1 3 5)))
-    (setf is2 (jez-make-int-set '(0 2 4 6)))
-
-    (should (jez-int-set-union is is2))
-
-    (should (equal (jez-int-set-as-list is) '(0 1 2 3 4 5 6)))
-    (should (equal (jez-int-set-as-list is2) '(0 2 4 6)))
-
-    (should (not (jez-int-set-union is (jez-make-int-set))))
-    (should (equal (jez-int-set-as-list is) '(0 1 2 3 4 5 6)))))
-
-(ert-deftest jezt-int-set-union-into-empty ()
-  (let (is is2)
-    (setf is (jez-make-int-set))
-    (setf is2 (jez-make-int-set '(0 2 4 6)))
-
-    (should (eq (jez-int-set-union is is2) is))
-
-    (should (equal (jez-int-set-as-list is) '(0 2 4 6)))
-    (should (equal (jez-int-set-as-list is2) '(0 2 4 6)))))
-
-(ert-deftest jezt-int-set-equal-are-equal ()
-  (let (is is2)
-    (setf is (jez-make-int-set))
-    (setf is2 (jez-make-int-set))
-
-    (loop for x in '(1 2 3 4)
-          do (jez-int-set-add is x))
-
-    (loop for x in '(4 3 2 1)
-          do (jez-int-set-add is2 x))
-
-    (should (equal is is2))
-    (should (eql (sxhash is) (sxhash is2)))))
 
 (defconst jezt-lr-toy-terminals
   '((a . 1)
@@ -282,7 +231,7 @@ of a production."
                 (F -> @ { E })
                 (F -> @ i)))))))
 
-(ert-deftest jez-canonical-lr0-construction ()
+(defun jezt-canonical-lr0-construction-test ()
   (let* ((lr (jez-lr-slurp-grammar
               '((E E + T)
                 (E T)
@@ -299,67 +248,71 @@ of a production."
 
               'E)))
 
-    (destructuring-bind (states transitions) (jez-compute-lr0-states lr)
-
+    (destructuring-bind (states txdb) (jez-compute-lr0-states lr)
+      (setf states (cl-coerce states 'list))
       ;; We should have no duplicate states and no duplicate transitions.
-
-      (should (equal states (remove-duplicates states :test 'equal)))
-      (should (equal transitions (remove-duplicates transitions :test 'equal)))
-      (should (equal (length transitions) 22))
+      (let ((transitions (jez-txdb--transitions txdb)))
+        (should (equal states (remove-duplicates states :test 'equal)))
+        (should (equal transitions (remove-duplicates transitions :test 'equal)))
+        (should (equal (length transitions) 22)))
 
       ;; Make sure we generate all the states we expect
+      (dotimes (i (length states))
+        (princ (format "State %d:\n" i))
+        (jezt-pp-lr0-state lr (elt states i)))      
 
-      (loop for expected-state in
-            '(((START -> @ E)
-               (E -> @ E + T)
-               (E -> @ T)
-               (T -> @ T * F)
-               (T -> @ F)
-               (F -> @ { E })
-               (F -> @ i))
+      (cl-loop
+         for expected-state in
+           '(((START -> @ E)
+              (E -> @ E + T)
+              (E -> @ T)
+              (T -> @ T * F)
+              (T -> @ F)
+              (F -> @ { E })
+              (F -> @ i))
 
-              ((START -> E @)
-               (E -> E @ + T))
+             ((START -> E @)
+              (E -> E @ + T))
 
-              ((E -> T @)
-               (T -> T @ * F))
+             ((E -> T @)
+              (T -> T @ * F))
 
-              ((T -> F @))
+             ((T -> F @))
 
-              ((F -> { @ E })
-               (E -> @ E + T)
-               (E -> @ T)
-               (T -> @ T * F)
-               (T -> @ F)
-               (F -> @ { E })
-               (F -> @ i))
+             ((F -> { @ E })
+              (E -> @ E + T)
+              (E -> @ T)
+              (T -> @ T * F)
+              (T -> @ F)
+              (F -> @ { E })
+              (F -> @ i))
 
-              ((F -> i @))
+             ((F -> i @))
 
-              ((E -> E + @ T)
-               (T -> @ T * F)
-               (T -> @ F)
-               (F -> @ { E })
-               (F -> @ i))
+             ((E -> E + @ T)
+              (T -> @ T * F)
+              (T -> @ F)
+              (F -> @ { E })
+              (F -> @ i))
 
-              ((T -> T * @ F)
-               (F -> @ { E })
-               (F -> @ i))
+             ((T -> T * @ F)
+              (F -> @ { E })
+              (F -> @ i))
 
-              ((F -> { E @ })
-               (E -> E @ + T))
+             ((F -> { E @ })
+              (E -> E @ + T))
 
-              ((E -> E + T @)
-               (T -> T @ * F))
+             ((E -> E + T @)
+              (T -> T @ * F))
 
-              ((T -> T * F @))
+             ((T -> T * F @))
 
-              ((F -> { E } @)))
-            for sno upfrom 0
-            do
-            (let ((translated-state
+             ((F -> { E } @)))
+         for sno upfrom 0
+         do (let ((translated-state
                    (jezt-make-lr0-state lr expected-state)))
-
+              (princ (format "Expecting to find state:\n"))
+              (jezt-pp-lr0-state lr translated-state)              
               (cond ((member translated-state states)
                      (setf states (remove translated-state states)))
                     (t (error "could not find state #%d: %S" sno
@@ -368,13 +321,5 @@ of a production."
       (when states
         (error "unexpected states found")))))
 
-(let* ((lr (jez-lr-slurp-grammar
-              '((A B C)
-                (C c)
-                (B))
-
-              jezt-lr-toy-terminals
-
-              'A)))
-
-  (jez-make-lalr-parser lr))
+(ert-deftest jez-canonical-lr0-construction ()
+  (jezt-canonical-lr0-construction-test))

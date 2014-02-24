@@ -15,10 +15,6 @@
 ;; that we don't resolve conflicts statically.  Instead, we rely on
 ;; the GLR parser driver to resolve conflicts for us.
 ;;
-;; We use the Dragon Book algorithm for computing the LALR lookahead
-;; set.  Some algorithms run faster; other algorithms are simple. But
-;; this one is widely-known and fast enough.
-;;
 ;; The compiled-grammar uses these LR parsing tables to run a GLR
 ;; parse over a token stream.  Briefly, GLR parsers deal with
 ;; shift-reduce and reduce-reduce conflicts by forking the parse state
@@ -26,14 +22,10 @@
 ;;
 
 (require 'jezebel-util)
+(require 'cl-lib)
+(eval-when-compile '(require 'cl))
 
-(defconst jez-epsilon-sym -1
-  "Special symbol number used to indicate an epsilon production")
-
-(defconst jez-end-sym -2
-  "Special symbol number used to indicate end of input")
-
-(defstruct jez-lr
+(cl-defstruct jez-lr
   ;; Hash mapping syms (terminals and nonterminals) to allocated
   ;; numbers.
   sym->symno
@@ -43,22 +35,43 @@
 
   ;; Array of productions, which is essentially a vectorized form of
   ;; the grammar input.  For each production i, (aref productions i)
-  ;; is a cons (NONTERMNO, RHS), where NONTERMNO is the symbol number
+  ;; is a cons (NONTERMNO . RHS), where NONTERMNO is the symbol number
   ;; of the production and RHS is a possibly-empty list representing
-  ;; the symbols produced.
+  ;; the symbols produced, each one a symbol number.
   productions
 
   ;; Array mapping (- SYMNO MIN-NONTERM) to list of productions that
   ;; produce SYMNO.  Query with jez-lr-production-rules-for-symbol.
   produces)
 
+(defconst jez-end-sym-offset -1
+  "Offset into the symbol numbers for the special end symbol")
+(defconst jez-epsilon-sym-offset -2
+  "Offset into the symbol numbers for the special epsilon symbol")
+
 (defun jez-lr-number-symbols (lr)
   "Return the total number of symbols in LR."
   (+ (length (jez-lr-produces lr))
      (jez-lr-min-nonterm lr)))
 
+(defun jez-lr-end-sym (lr)
+  "Return the number of the special end symbol."
+  (+ (jez-lr-number-symbols lr)
+     jez-end-sym-offset))
+
+(defun jez-lr-epsilon-sym (lr)
+  "Return the number of the special epsilon symbol."
+  (+ (jez-lr-number-symbols lr)
+     jez-epsilon-sym-offset))
+
 (defun jez-lr-slurp-grammar (rules terminals start)
-  "Construct a jez-lr object."
+  "Construct a jez-lr object.
+RULES is a list of productions.  Each production is a cons of the
+form (LHS . RHS), where LHS produces RHS.  LHS is a non-terminal
+symbol; RHS is a list of terminal and non-terminal symbols.
+TERMINALS is a list of terminals.  Each is a cons cell (TERM
+. TERMNO), where TERM is a symbol naming the terminal and TERMNO
+is a number associated with that terminal. "
 
   (unless rules
       (error "no rules supplied"))
@@ -72,11 +85,11 @@
   ;; actually has many productions.  This start symbol is also
   ;; guaranteed to be the lowest-numbered non-terminal and to be
   ;; production number 0.
-
-  (push (list 'jez-real-start start) rules)
+  (push (list '\!START start) rules)
 
   (let* ((next-symno 0)
          (min-nonterm nil)
+         (epsilon-sym nil)
          (produces nil)
          (sym->symno (make-hash-table :test 'eq))
          (productions (make-vector (length rules) nil)))
@@ -84,7 +97,6 @@
     ;; Incorporate the user-supplied term->termno mapping into our
     ;; internal mapping, and start assigning symbol numbers only after
     ;; assigning user numbers.
-
     (dolist (terminals-entry terminals)
       (let ((term (car terminals-entry))
             (termno (cdr terminals-entry)))
@@ -100,49 +112,51 @@
     ;; Assign numbers to non-terminals. next-symno is greater than any
     ;; user-supplied terminal and we can carve out internal numbers
     ;; for our terminals.
-
     (setf min-nonterm next-symno)
 
     (dolist (production rules)
       (let ((nonterm (first production)) nontermno)
         (unless (symbolp nonterm)
           (error "non-terminal must be symbol: %s" nonterm))
-
         (setf nontermno (gethash nonterm sym->symno))
-        (when (and nontermno
-                   (< nontermno min-nonterm))
-          (error "cannot produce a terminal: %s" nonterm))
-
+        (when (and nontermno (< nontermno min-nonterm))
+          (error "terminal cannot be on left side of production: %s"
+                 nonterm))
         (unless nontermno
           (setf nontermno next-symno)
           (incf next-symno)
           (puthash nonterm nontermno sym->symno))))
 
+    ;; Special symbols.  Special symbol constants are negative values
+    ;; and are counted from the end of the symbol array.
+    (incf next-symno (- (min jez-end-sym-offset
+                             jez-epsilon-sym-offset)))
+    (setf epsilon-sym (+ next-symno jez-epsilon-sym-offset))
+
     ;; Now vectorize the parsing rules.
-
     (setf produces (make-vector (- next-symno min-nonterm) nil))
-
-    (loop for (nonterm . rhs) in rules
-          for prodidx upfrom 0
-          for nontermno = (gethash nonterm sym->symno)
-          for rhslst = (or (loop for sym in rhs
-                                  collect (or (gethash sym sym->symno)
-                                              (error "unknown symbol: %s" sym)))
-
-                           ;; An empty right side is actually an
-                           ;; epsilon production.  It's still a
-                           ;; non-terminal, so we want
-                           ;; jez-lr-production-rules-for-symbol to
-                           ;; return something.
-
-                           (list jez-epsilon-sym))
-
-          do (aset productions prodidx (cons nontermno rhslst))
-          and do (push prodidx
-                       (aref produces (- nontermno min-nonterm))))
+    (cl-loop
+       for (nonterm . rhs) in rules
+       for prodidx upfrom 0
+       ;; Translate rule into pure numerical form
+       for nontermno = (gethash nonterm sym->symno)
+       for rhslst = (or (cl-loop
+                           for sym in rhs
+                           collect (or (gethash sym sym->symno)
+                                       (error "unknown symbol: %s" sym)))
+                        ;; An empty right side is actually an
+                        ;; epsilon production.  It's still a
+                        ;; non-terminal, so we want
+                        ;; jez-lr-production-rules-for-symbol to
+                        ;; return something.
+                        (list epsilon-sym))
+       do (aset productions prodidx (cons nontermno rhslst))
+       ;; Separately, maintain a database storing which productions
+       ;; can produce a given non-terminal.
+       and do (push prodidx
+                    (aref produces (- nontermno min-nonterm))))
 
     ;; Return a jez-lr object embodying the parsed, checked grammar.
-
     (make-jez-lr
      :sym->symno sym->symno
      :min-nonterm min-nonterm
@@ -150,27 +164,26 @@
      :produces produces)))
 
 (defun jez-lr-compute-nullability (lr)
-  "Compute the nullability information for LR."
-  (loop
-   with nsymbols = (jez-lr-number-symbols lr)
-   with nullability = (make-bool-vector nsymbols nil)
-   with productions = (jez-lr-productions lr)
-   while (loop
-          with changed = nil
-          for (lsymno . rhs) across productions
-          for rhs-nullable = (loop for rsymno in rhs
-                                   always (or (eq rsymno jez-epsilon-sym)
-                                              (aref nullability rsymno)))
-          if rhs-nullable
-          do (unless (aref nullability lsymno)
-               (aset nullability lsymno t)
-               (setf changed t))
-          finally return changed)
-   finally return nullability))
-
-(defun jez-lr-nullable-p (lr symno)
-  "Is the given symbol nullable?"
-  (aref (jez-lr-nullability lr) symno))
+  "Compute the nullability information for LR.
+LR is an LR object. Return is a bool vector giving the
+nullability for each symbol."
+  (cl-loop
+     with nsymbols = (jez-lr-number-symbols lr)
+     with nullability = (make-bool-vector nsymbols nil)
+     with productions = (jez-lr-productions lr)
+     with epsilon-sym = (jez-lr-epsilon-sym lr)
+     while (cl-loop
+              with changed = nil
+              for (lsymno . rhs) across productions
+              for rhs-nullable = (cl-loop for rsymno in rhs
+                                    always (or (eq rsymno epsilon-sym)
+                                               (aref nullability rsymno)))
+              if rhs-nullable
+              do (unless (aref nullability lsymno)
+                   (aset nullability lsymno t)
+                   (setf changed t))
+              finally return changed)
+     finally return nullability))
 
 (defun jez-lr-production-rules-for-symbol (lr symno)
   "Find what production rules produce nonterminal SYMNO.
@@ -183,97 +196,6 @@ return a list of production numbers.
         (aref (jez-lr-produces lr)
               (- symno min-nonterm)))))
 
-;;
-;; Int-sets are useful for various parser operations.  As the name
-;; might suggest, int-sets hold small, sparse sets of integers,
-;; usually representing terminals, parser symbols, productions, and so
-;; on.  They support union, intersection, and so on.
-;;
-;; N.B. all sets with the same contents have the same sxhash and are
-;; #'equal.
-;;
-;; We implement intsets as lists today, but (XXX) abstract them
-;; here so we can switch over to hash tables, search trees, or
-;; other primitives if we see performance problems here.
-;;
-
-(defun jez-make-int-set (&optional initial-contents)
-  "Make a new int set object."
-  (cons 'jez-int-set
-        (and initial-contents
-             (delete-consecutive-dups
-              (sort
-               (copy-sequence initial-contents)
-               #'<)))))
-
-(defun jez-int-set-p (is)
-  (eq (car-safe is) 'jez-int-set))
-
-(defun jez-copy-int-set (is)
-  "Copy int set object IS."
-  (check-type is jez-int-set)
-  (copy-sequence is))
-
-(defun jez-int-set-add (is int)
-  "Add integer INT to int-set object IS.
-Return non-nil if we changed IS."
-  (check-type is jez-int-set)
-  (unless (memq int is)
-    (setcdr is (sort (cons int (cdr is)) #'<))))
-
-(defun jez-int-set-remove (is int)
-  "Remove an element INT from int-set IS."
-  (check-type is jez-int-set)
-  (setcdr is (delq int (cdr is))))
-
-(defun jez-int-set-empty-p (is)
-  "Is the int-set IS empty?"
-  (check-type is jez-int-set)
-  (null (cdr is)))
-
-(defun jez-int-set-member-p (is int)
-  "Is INT a member of IS?"
-  (check-type is jez-int-set)
-  (memq int (cdr is)))
-
-(defmacro* jez-do-int-set ((var is) &rest body)
-  "Like dolist, but for int-sets."
-  `(dolist (,var (cdr ,is))
-     ,@body))
-
-(defun jez-int-set-as-list (is)
-  "Return the contents of int-set IS as a list"
-  (cdr is))
-
-(defun jez-int-set-union (is merge-from)
-  "Set IS to union of IS and MERGE-FROM.
-Return whether we changed IS.  MERGE-FROM is
-unchanged."
-
-  (check-type is jez-int-set)
-  (check-type merge-from jez-int-set)
-  (pop merge-from)
-
-  (let (changed)
-    (while merge-from
-      (cond ((or (null (cdr is))
-                 (< (car merge-from) (cadr is)))
-             (setcdr is (cons (car merge-from) (cdr is)))
-             (setf changed t)
-             (pop merge-from)
-             (pop is))
-            ((= (car merge-from) (cadr is))
-             (pop merge-from)
-             (pop is))
-            (t
-             (assert (> (car merge-from) (cadr is)))
-             (pop is))))
-    changed))
-
-(defconst jez-empty-int-set (jez-make-int-set))
-
-(put 'jez-do-int-set 'lisp-indent-function 1)
-
 (defun jez-lr0-item-< (a b)
   "Compare two LR(0) items."
   (cond ((< (car a) (car b)) t)
@@ -284,17 +206,14 @@ unchanged."
   "Close over the given LR(0) items.
 Each item is a cons (PRODNO . DOTPOS).  Return a new list of
 items."
-
   (let ((productions (jez-lr-productions lr))
         (to-process items)
         (item-to-close nil)
         (next-productions nil)
         (closed-items (copy-sequence items))
         (next-item nil))
-
     (while to-process
       (setf item-to-close (pop to-process))
-
       ;; The production (entry in the productions array) is a cons
       ;; (LHS . RHS), where LHS is the non-terminal being produced and
       ;; RHS is a list of symbols that LHS generates. Here, we
@@ -306,44 +225,38 @@ items."
       ;; produce next-symno.  Because next-productions is nil if nth
       ;; returned nil (dot at end) or a terminal, we only add
       ;; nonterminals in the loop below.
-
       (setf next-productions
             (jez-lr-production-rules-for-symbol
              lr
              (nth (1+ (cdr item-to-close))
-                            (aref productions (car item-to-close)))))
-
+                  (aref productions (car item-to-close)))))
       (while next-productions
         (setf next-item (cons (pop next-productions) 0))
         (unless (member next-item closed-items)
           (push next-item closed-items)
           (push next-item to-process))))
-
     (sort closed-items #'jez-lr0-item-<)))
 
 (defun jez-lr0-goto (lr items symno)
   "Compute the goto function on a set of LR(0) items.
 Each item is a cons (PRODNO . DOTPOS).  This routine returns a
 closed set of LR(0) items."
-
   (let ((productions (jez-lr-productions lr))
         (item nil)
         (goto-set nil))
-
     (while items
       (setf item (pop items))
       (when (eq symno (nth (1+ (cdr item)) (aref productions (car item))))
         (push (cons (car item) (1+ (cdr item))) goto-set)))
-
     (jez-lr0-closure lr goto-set)))
 
 (defun jez-lr0-kernel (items)
   "Compute the kernel (dotpos nonzero) for an LR(0) state."
-
-  (loop for item in items
-        for (prodno . dotpos) = item
-        if (or (= prodno 0) (> dotpos 0))
-        collect item))
+  (cl-loop
+     for item in items
+     for (prodno . dotpos) = item
+     if (or (= prodno 0) (> dotpos 0))
+     collect item))
 
 (defun jez-make-tx (from via to)
   "Make a new transition.
@@ -363,7 +276,7 @@ destination state number."
 
 (defun jez-compute-lr0-states (lr)
   "Compute the LR(0) DFA for grammar LR.
-Return (STATES . TRANSITIONS).
+Return a list (STATES TRANSITIONS).
 
 STATES is an ordered vector of states, where each state is an
 ordered list of LR(0) items, each item being of the form (PRODNO
@@ -433,45 +346,45 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
     (list (apply #'vector (nreverse state-list))
           (jez-make-txdb
            (nreverse transitions)
-           (jez-lr-min-nonterm lr)))))
+           lr))))
 
-(defstruct (jez-txdb
-            (:constructor jez--make-txdb)
-            (:copier nil)
-            (:conc-name jez-txdb--))
+(cl-defstruct (jez-txdb
+               (:constructor jez--make-txdb)
+               (:copier nil)
+               (:conc-name jez-txdb--))
+  ;; List of all transitions, each one a list (FROM VIA . TO); use the
+  ;; jez-tx- accessors.
   transitions
+  ;; Vector of transitions; maps transition numbers to transition
+  ;; objects.
   ntt
-  min-nonterm)
+  ;; lr object associated with this txdb
+  lr)
 
-(defun jez-make-txdb (transition-list min-nonterm)
+(defun jez-make-txdb (transition-list lr)
   "Make an object that can be used to query transitions.
-
-TRANSITION-LIST is a list of transition objects.  MIN-NONTERM is
-the smallest non-terminal symbol number.
-
-Note that the returned structure references TRANSITION-LIST by
-reference.  Either guarantee its immutability or supply a copy. "
-
+TRANSITION-LIST is a list of transition objects.  LR is the LR
+object.  Note that the returned structure references
+TRANSITION-LIST by reference.  Either guarantee its immutability
+or supply a copy. "
   (jez--make-txdb
    :transitions transition-list
    :ntt (apply #'vector
-               (loop for transition in transition-list
-                     for via = (jez-tx-via transition)
-                     when (>= via min-nonterm)
-                     collect transition))
-   :min-nonterm min-nonterm))
+               (cl-loop for transition in transition-list
+                  for via = (jez-tx-via transition)
+                  when (>= via (jez-lr-min-nonterm lr))
+                  collect transition))
+   :lr lr))
 
-
-
-(defun* jez-txdb-query (txdb
-                        &key
-                        from
-                        via
-                        to
-                        kind
-                        (want 'tx)
-                        test
-                        just-one)
+(cl-defun jez-txdb-query (txdb
+                          &key
+                          from
+                          via
+                          to
+                          kind
+                          (want 'tx)
+                          test
+                          just-one)
   "Retrieve transitions database matching given criteria.
 
 TXDB is a transitions database object created by `jez-make-txdb'.
@@ -505,9 +418,10 @@ unnecessary allocation.
 If WANT is 'txn, then KIND must be 'non-terminal.  WANT defaults
 to 'tx.
 
-If TEST is non-nil, it is a function called with one argument,
-the transition object.  That transition object is added to the
-result set only if TEST returns non-nil.
+If TEST is non-nil, it is a function called for each transition
+considered.  The function is called with one argument, the
+transition number under consideration.  That transition object is
+added to the result set only if TEST returns non-nil.
 
 If JUST-ONE is t, instead of returning a list of matching
 terminals or terminal numbers, return the single matching
@@ -526,7 +440,7 @@ terminal number.
     (assert (eq kind 'non-terminal) nil
             "Only non-terminal transitions are numbered"))
 
-  (let* ((min-nonterm (jez-txdb--min-nonterm txdb)))
+  (let* ((min-nonterm (jez-lr-min-nonterm (jez-txdb--lr txdb))))
     (cl-macrolet
         ((TXTEST
           ()
@@ -637,9 +551,13 @@ R.
                      (jez-traverse-lazy-fetch FP F x))))
             (setf e (jez-traverse-stack-pop S))))))))
 
+(defun jez-lr-rhs-for-prodno (lr prodno)
+  "Return the right hand side of the given production number"
+  (cdr (aref (jez-lr-productions lr) prodno)))
+
 (defun jez-reversed-rhs (lr prodno)
   "Return the reversed RHS for a given production in LR."
-  (reverse (cdr (aref (jez-lr-productions lr) prodno))))
+  (reverse (jez-lr-rhs-for-prodno lr prodno)))
 
 (defun jez-lhs (lr prodno)
   "Return the non-terminal symno produced by prodno."
@@ -696,18 +614,21 @@ to transition objects.
         when (aref nullability (jez-tx-via next-tx))
         collect tn2))
 
-(defun jez-lr-Dr-impl (txdb tn)
+(defun jez-lr-Dr-impl (out txdb tn)
   "Provide the Dr set, here represented as a set-valued function.
-Return the set of terminals transition away from the state to
-which tn transitions."
-
+Store into OUT, a bool vector, the terminals that result in
+transitions away from the state to which tn transitions."
+  (when (eq tn 0)
+    (aset out (+ ))
+    ()
+    )
   (jez-make-int-set
    (append
     (if (eq tn 0) (list jez-end-sym))
     (jez-txdb-query txdb
-           :to (jez-tx-to (jez-txdb-txn->tx txdb tn))
-           :kind 'terminal
-           :want #'jez-tx-via))))
+                    :to (jez-tx-to (jez-txdb-txn->tx txdb tn))
+                    :kind 'terminal
+                    :want #'jez-tx-via))))
 
 (defun jez-make-lalr-parser (lr)
   "Compute LALR(1) information for LR.
@@ -723,7 +644,8 @@ LR0-item conses.  TRANSITIONS is XXX.  Lookaheads.
   ;; N.B. Somewhat confusingly, the "relations" in the paper (in bold
   ;; type in the paper, here ALL CAPS) and the sets (capitalized,
   ;; e.g. Read) are both _functions_: the relations are bool-valued
-  ;; functions and the capitalized words are set-valued functions.
+  ;; functions and the sets (capitalized words) are set-valued
+  ;; functions.
 
   (let* ( ;; Vector mapping symno -> nullability bool
          (nullability (jez-lr-compute-nullability lr))
@@ -734,14 +656,14 @@ LR0-item conses.  TRANSITIONS is XXX.  Lookaheads.
          (txdb (nth 1 lr0info))
 
          ;; Dr (Direct Reads) set-valued function.  Function maps
-         ;; nonterminal transition numbers to int-sets of terminals
-         ;; read from the destination state.
+         ;; nonterminal transition numbers to sets of terminals read
+         ;; from the destination state.
          (Dr (lambda (tn1) (jez-lr-Dr-impl txdb tn1)))
 
          ;; Implements the READS relation: (funcall READS tn1), tn1
          ;; being a nonterminal transition number, returns a list of
-         ;; tn2 nonterminal transition numbers.  If tn1 is (p A r), then
-         ;; each tn2 is (r C s) where C is a nullable nonterminal
+         ;; tn2 nonterminal transition numbers.  If tn1 is (p t1 r),
+         ;; then each tn2 is (r C s) where C is a nullable nonterminal
          ;; symbol number and p, r, and s are valid state numbers.
          (READS (lambda (tn1) (jez-lr-READS-impl txdb nullability tn1)))
 
@@ -752,17 +674,18 @@ LR0-item conses.  TRANSITIONS is XXX.  Lookaheads.
          ;; states to jez-tx objects where the array index is
          ;; the transition's TO field.
          (state->tx*
-          (loop with state->tx* = (make-vector (length states) nil)
-                for tx in transitions
-                for to = (jez-tx-to tx)
-                do (push tx (aref state->tx* to))
-                finally return state->tx*))
+          (cl-loop
+             with state->tx* = (make-vector (length states) nil)
+             for tx in transitions
+             for to = (jez-tx-to tx)
+             do (push tx (aref state->tx* to))
+             finally return state->tx*))
 
          ;; Implement the LOOKBACK relation: (funcall LOOKBACK q P), q
-         ;; being a state and P being a production number reduced in
-         ;; that state, A->w, returns transition numbers of all
-         ;; transitions (p,A) so that P produces A and a path through
-         ;; the DFA between p and q spells w.
+         ;; being a state and P being a production number that can be
+         ;; used to reduced in that state, A→ω, returns transition
+         ;; numbers of all transitions (p,A) so that P produces A and
+         ;; some path through the DFA between p and q spells ω.
          (LOOKBACK
           (lambda (q P)
             (jez-lr-LOOKBACK-impl q P lr state->tx* state->ntt ntt)))
@@ -820,21 +743,11 @@ and TERMNO is a Lisp integer that the lexer will eventually
 supply to the grammar parser in order to drive it forward.  For
 maximum efficiency, the maximum TERMNO should be as small as
 possible: we build arrays indexed by TERMNO.
-
 "
 
-  (let (lr start rules terminals)
-    ;; Vectorize the terminals and production rules.
-    (setf rules (first grammar))
-    (setf terminals (second grammar))
-    (setf lr (jez-lr-slurp-grammar rules terminals start))
-
-    ;; Construct the LR(1) table.
-
-    ;; Reduce to LALR(1)
-
-    
-
+  (let* ((rules (first grammar))
+         (terminals (second grammar))
+         (lr (jez-lr-slurp-grammar rules terminals 'start)))
     )
 
   )
