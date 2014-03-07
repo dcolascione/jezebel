@@ -69,10 +69,9 @@ of a production."
 
 (defun jezt-pp-hr-symbol (lr symno)
   (cond
-   ((eq symno (jez-lr-epsilon-sym lr)) "\u03B5")
-   ((eq symno (jez-lr-end-sym lr)) "#")
-   (t (symbol-name (jezt-lr-lisp-symbol-for-symno
-                    lr symno)))))
+    ((eq symno (jez-lr-end-sym lr)) "#")
+    (t (symbol-name (jezt-lr-lisp-symbol-for-symno
+                     lr symno)))))
 
 (cl-defun jezt-pp-production-rule (lr rule &optional stream &key dotpos lahead)
   (let* ((lhs (car rule))
@@ -81,15 +80,17 @@ of a production."
     (princ (format "%15s \u2192 "
                    (jezt-lr-lisp-symbol-for-symno lr lhs))
            stream)
-    (princ (mapconcat
-            (lambda (symno)
-              (prog1
-                  (concat
-                   (if (eql dotpos rhsidx) "\u00B7 ")
-                   (jezt-pp-hr-symbol lr symno))
-                (incf rhsidx)))
-            rhs " ")
-           stream)
+    (if (null rhs)
+        (princ "\u03B5")
+      (princ (mapconcat
+              (lambda (symno)
+                (prog1
+                    (concat
+                     (if (eql dotpos rhsidx) "\u00B7 ")
+                     (jezt-pp-hr-symbol lr symno))
+                  (incf rhsidx)))
+              rhs " ")
+             stream))
     (if (eql dotpos rhsidx)
         (princ " \u00B7" stream))
     (if lahead
@@ -259,7 +260,7 @@ of a production."
       ;; Make sure we generate all the states we expect
       (dotimes (i (length states))
         (princ (format "State %d:\n" i))
-        (jezt-pp-lr0-state lr (elt states i)))      
+        (jezt-pp-lr0-state lr (elt states i)))
 
       (cl-loop
          for expected-state in
@@ -312,7 +313,7 @@ of a production."
          do (let ((translated-state
                    (jezt-make-lr0-state lr expected-state)))
               (princ (format "Expecting to find state:\n"))
-              (jezt-pp-lr0-state lr translated-state)              
+              (jezt-pp-lr0-state lr translated-state)
               (cond ((member translated-state states)
                      (setf states (remove translated-state states)))
                     (t (error "could not find state #%d: %S" sno
@@ -323,3 +324,37 @@ of a production."
 
 (ert-deftest jez-canonical-lr0-construction ()
   (jezt-canonical-lr0-construction-test))
+
+(defun jezt-do-set-test (idx n)
+  (let ((v (make-bool-vector n nil))
+        (r nil))
+    (dolist (q idx)
+      (aset v q t))
+    (jez-do-set (q v)
+      (push q r))
+    (setf r (nreverse r))
+    (should (equal r idx))))
+
+(ert-deftest jezt-do-set ()
+  (jezt-do-set-test '(1 3 4 7) 10))
+
+(ert-deftest jezt-do-set-empty ()
+  (jezt-do-set-test nil 10))
+
+(ert-deftest jezt-do-set-all ()
+  (jezt-do-set-test '(0 1 2 3 4) 5))
+
+(defun jezt-lalr-test ()
+  (let* ((toyrules
+          '((A a b)
+            (A B)
+            (B b a)))
+         (lr
+          (jez-lr-slurp-grammar
+           toyrules
+           jezt-lr-toy-terminals
+           'A))
+         (lr0info (jez-compute-lr0-states lr))
+         )
+    lr0info
+    ))

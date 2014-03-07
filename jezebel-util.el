@@ -1,11 +1,12 @@
 ;; -*- lexical-binding: t -*-
 
 (eval-when-compile
+  (require 'macroexp)
   (require 'cl))
 
 (require 'cl-lib)
 
-(declare (optimize (speed 3) (safety 0)))
+;; (declare (optimize (speed 3) (safety 0)))
 
 
 ;;;; Misc.
@@ -452,81 +453,25 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
        (list* ,@body ,tmp-sym))))
 
-
-;;;; Specializable function definitions.  During compilation, we
-;;;; generate different code for each call site --- like defsubst, but
-;;;; better.
+(defun jez-dbg (fmt &rest args)
+  (princ (apply #'format (concat fmt "\n") args)))
 
-(defconst jez-subst-unsafe (gensym "unsafe-subst"))
-
-(defun jez-subst-value (form var val environment)
-  "Decide whether it is safe to substitute VAL for VAR in FORM.
-ENVIRONMENT is the lexical macro environment.
-
-A form is unsafe to substitute if either
-
-  1) it is not a compile-time constant, or
-  2) FORM modifies the VAR binding, e.g., (setq VAR nil).
-
-If the substitution is safe, this routine returns the value to be
-substituted.  Otherwise, it returns the symbol stored in
-`jez-subst-unsafe'."
-
-  
-
-  )
-
-(defun jez-specialize-form (bindings form &optional environment)
-  "Specialize a form by substitution.
-
-For all (SYM VAL) in BINDINGS, substitute SYM with VAL in FORM if
-`jez-subst-value' tells us it's safe to do so.  Otherwise,
-let-bind SYM to VAL around FORM.
-
-FORM promises not to directly modify (i.e., setq/setf) any SYM in
-BINDING.  If FORM breaks this promise, callers can see values
-change unexpectedly."
-
-  (loop for (sym val) in bindings
-        for newsym = (cl-gensym "specialize")
-        for newval = (jez-subst-value form sym val environment)
-
-        if (eq newval jez-subst-unsafe)
-        collect (list newsym val) into value-lets
-        and collect (list sym newsym) into macro-lets
-        else
-        collect (if (not (eq sym val)) (list sym val)) into macro-lets
-
-        finally return
-        `(let ,value-lets
-           (symbol-macrolet ,(delq nil macro-lets)
-             ,form))))
-
-(defmacro jez-define-specializing-function (name arglist &rest body)
-  "Define a function that's specialized into each call site.
-
-
-
-
+(cl-defmacro jez-with-named-temp-file ((filename-symbol
+                                        prefix
+                                        &optional
+                                        dir-flag
+                                        suffix)
+                                       &rest body)
+  "Like `make-temp-file', but clean up on scope exit.
+FILENAME-SYMBOL is defined to be the name of the temporary file.
+PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
 "
-
-  (let ((specializing-name (intern (format "%s-specializing" name)))
-        (env-sym (gensym "env")))
-
-    `(progn
-       (defun* ,name ,arglist ,@body)
-       (defmacro* ,specializing-name (&environment ,env-sym ,@arglist)
-         (jez-specialize-form
-          (list
-           ,@(loop for var in (cl--arglist-args arglist)
-                   collect `(list ',var ,var)))
-          '(progn ,@body)
-          ,env-sym))
-       ',name)))
-
-(setf (symbol-plist 'jez-define-specializing-function)
-      (copy-sequence
-       (symbol-plist 'defun)))
-(put 'jez-define-specializing-function 'lisp-indent-function 'defun)
+  `(let ((,filename-symbol
+          (make-temp-file ,prefix ,dir-flag ,suffix)))
+     (unwind-protect
+          ,(macroexp-progn body)
+       (ignore-errors
+         (delete-file ,filename-symbol)))))
+(put 'jez-with-named-temp-file 'lisp-indent-function 1)
 
 (provide 'jezebel-util)
