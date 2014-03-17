@@ -862,7 +862,12 @@ terminals.
                  (princ (jez-lr-symbol-name lr symno)))
                (princ "}"))))))
 
-(defun jez-dbg-format-item (item lr &optional la)
+(cl-defun jez-dbg-format-item (item
+                               lr
+                               &optional
+                               la
+                               &key
+                               (la-prefix "    "))
   (with-output-to-string
       (let* ((prodno (jez-lr-item-prodno item))
              (dotpos (jez-lr-item-dotpos item))
@@ -878,8 +883,15 @@ terminals.
         (when (= dotpos (length rhs))
           (princ "•")
           (when la
-            (princ "    ")
+            (princ la-prefix)
             (princ (jez-dbg-format-symset (gethash item la) lr)))))))
+
+(defun jez-dbg-format-tx (tx lr)
+  (with-output-to-string
+      (princ (format "%s→%s via %s"
+                     (jez-tx-from tx)
+                     (jez-tx-to tx)
+                     (jez-lr-symbol-name lr (jez-tx-via tx))))))
 
 (defun jez-dbg-format-prodno (prodno lr)
   (jez-dbg-format-item (jez-lr-make-item prodno -1) lr))
@@ -1059,13 +1071,13 @@ resulting table."
   (princ (format "hidden_start -> state_0;\n"))
   (princ "}\n"))
 
-(cl-defun jez-view-automaton (lr
-                              &key
-                              keep-dotfile
-                              numbered-states
-                              numbered-ntt
-                              la-type
-                              background)
+(cl-defun jez-lr-view-automaton (lr
+                                 &key
+                                 keep-dotfile
+                                 numbered-states
+                                 numbered-ntt
+                                 la-type
+                                 background)
   (jez-with-named-temp-file (dotfile "jez-view" nil ".dot")
     (jez-with-named-temp-file (pdffile "jez-view" nil ".pdf")
       (with-temp-file dotfile
@@ -1084,17 +1096,17 @@ resulting table."
            :numbered-ntt numbered-ntt
            :ntt ntt
            :la la)))
-     (shell-command (format "dot -Tpdf %s > %s"
-                            (shell-quote-argument dotfile)
-                            (shell-quote-argument pdffile)))
-     (let ((cmd (format "evince %s 2>/dev/null"
-                        (shell-quote-argument pdffile))))
-       (if background
-           (progn
-             (async-shell-command cmd)
-             (sleep-for 1)))
-       (shell-command cmd))
-     (when keep-dotfile
-       (setf dotfile nil)))))
+      (shell-command (format "dot -Tpdf %s > %s"
+                             (shell-quote-argument dotfile)
+                             (shell-quote-argument pdffile)))
+      (let ((cmd (format "evince %s 2>/dev/null"
+                         (shell-quote-argument pdffile))))
+        (if background
+            (progn
+              (async-shell-command cmd)
+              (sleep-for 1)))
+        (shell-command cmd))
+      (when keep-dotfile
+        (setf dotfile nil)))))
 
 (provide 'jezebel-lr)
