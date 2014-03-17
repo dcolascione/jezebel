@@ -358,3 +358,23 @@ of a production."
          )
     lr0info
     ))
+
+
+(defun jezt-view-toylr ()
+  (let*
+      ((toyrules
+        '((A a b)
+          (A B)
+          (B b a)))
+
+       (toylr
+        (jez-lr-slurp-grammar
+         toyrules
+         jezt-lr-toy-terminals
+         'A)))
+    (jez-view-automaton
+     toylr
+     :la-type :lalr
+     :numbered-states t
+     :numbered-ntt t
+     :background nil)))

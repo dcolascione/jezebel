@@ -103,20 +103,10 @@ is a number associated with that terminal. "
   (unless terminals
       (error "no terminals supplied"))
 
-  ;; Because we use our own production to wrap the user's start
-  ;; symbol, we're guaranteed to have only one production for the
-  ;; whole grammar, even if the user's declared start symbol
-  ;; actually has many productions.  This start symbol is also
-  ;; guaranteed to be the lowest-numbered non-terminal and to be
-  ;; production number 0.
-  (push (list '^ start) rules)
-
   (let* ((next-symno 0)
          (min-nonterm nil)
          (produces nil)
-         (sym->symno (make-hash-table :test 'eq))
-         (productions (make-vector (length rules) nil)))
-
+         (sym->symno (make-hash-table :test 'eq)))
     ;; Incorporate the user-supplied term->termno mapping into our
     ;; internal mapping, and start assigning symbol numbers only after
     ;; assigning user numbers.
@@ -132,8 +122,17 @@ is a number associated with that terminal. "
         (setf next-symno (max next-symno (1+ termno)))
         (puthash term termno sym->symno)))
 
-    ;; We reserve the last terminal symbol to represent the end of the
-    ;; input.
+    ;; Because we use our own production to wrap the user's start
+    ;; symbol, we're guaranteed to have only one production for the
+    ;; whole grammar, even if the user's declared start symbol
+    ;; actually has many productions.  This start symbol is also
+    ;; guaranteed to be the lowest-numbered non-terminal and to be
+    ;; production number 0.
+    (puthash '$ next-symno sym->symno)
+    (push (list '^ start '$) rules)
+
+    ;; We reserved the last terminal symbol to represent the end of
+    ;; the input.
     (incf next-symno)
 
     ;; Assign numbers to non-terminals. next-symno is greater than any
@@ -155,28 +154,29 @@ is a number associated with that terminal. "
           (puthash nonterm nontermno sym->symno))))
 
     ;; Now vectorize the parsing rules.
-    (setf produces (make-vector (- next-symno min-nonterm) nil))
-    (cl-loop
-       for (nonterm . rhs) in rules
-       for prodidx upfrom 0
-       ;; Translate rule into pure numerical form
-       for nontermno = (gethash nonterm sym->symno)
-       for rhslst = (cl-loop
-                       for sym in rhs
-                       collect (or (gethash sym sym->symno)
-                                   (error "unknown symbol: %s" sym)))
-       do (aset productions prodidx (cons nontermno rhslst))
-       ;; Separately, maintain a database storing which productions
-       ;; can produce a given non-terminal.
-       and do (push prodidx
-                    (aref produces (- nontermno min-nonterm))))
+    (let ((productions (make-vector (length rules) nil)))
+      (setf produces (make-vector (- next-symno min-nonterm) nil))
+      (cl-loop
+         for (nonterm . rhs) in rules
+         for prodidx upfrom 0
+         ;; Translate rule into pure numerical form
+         for nontermno = (gethash nonterm sym->symno)
+         for rhslst = (cl-loop
+                         for sym in rhs
+                         collect (or (gethash sym sym->symno)
+                                     (error "unknown symbol: %s" sym)))
+         do (aset productions prodidx (cons nontermno rhslst))
+         ;; Separately, maintain a database storing which productions
+         ;; can produce a given non-terminal.
+         and do (push prodidx
+                      (aref produces (- nontermno min-nonterm))))
 
-    ;; Return a jez-lr object embodying the parsed, checked grammar.
-    (make-jez-lr
-     :sym->symno sym->symno
-     :min-nonterm min-nonterm
-     :productions productions
-     :produces produces)))
+      ;; Return a jez-lr object embodying the parsed, checked grammar.
+      (make-jez-lr
+       :sym->symno sym->symno
+       :min-nonterm min-nonterm
+       :productions productions
+       :produces produces))))
 
 (defun jez-lr-compute-nullability (lr)
   "Compute the nullability information for LR.
@@ -343,17 +343,12 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
       (setf current-state (pop to-process))
       (setf current-stateno (pop current-state))
 
-      (jez-dbg "current-stateno: %S current-state:%S"
-               current-stateno current-state)
-
       ;; For each symbol symno in our grammar, see whether any item in
       ;; current-state is about to generate that symbol, and if so,
       ;; build a new state for the transition.
 
       (dotimes (symno nsymbols)
         (setf next-state (jez-lr0-goto lr current-state symno))
-        (jez-dbg "symno:%S current-state:%S next-state:%S"
-                 symno current-state next-state)
         (when next-state ; Skip impossible transitions
           (setf next-stateno (gethash next-state statehash))
 
@@ -385,7 +380,7 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
                (:copier nil)
                (:conc-name jez-txdb--))
   ;; List of all transitions, each one a list (FROM VIA . TO); use the
-  ;; jez-tx- accessors.
+  ;; jez-tx- accessors to access fields of the objects.
   transitions
   ;; Vector of transitions; maps non-terminal transition numbers to
   ;; transition objects.
@@ -558,7 +553,6 @@ transitions objects that arrive in that state.  STATE->NTTN is an
 array mapping state numbers to the numbers of transitions that
 depart from that state.  NTT is an array mapping non-terminal
 transition numbers possible nonterminal transitions."
-  (jez-dbg "LOOKBACK: q:%S prod:%S" q prod)
   ;; Step 1: run the reverse-DFA (which is an NFA) backward from q
   ;; until we find the set of states P, where each p in P satisfies
   ;; the relation above.  At each transition, take an element from ω.
@@ -567,15 +561,11 @@ transition numbers possible nonterminal transitions."
          (cur-states (make-bool-vector (length state->tx*) nil))
          (next-states (make-bool-vector (length state->tx*) nil))
          (i (1- (length rhs))))
-    (jez-dbg "goal-symno: %S" goal-symno)
-    (jez-dbg "rhs: %S i:%S" rhs i)
     (aset cur-states q t)
     (while (>= i 0)
-      (jez-dbg "i: %S" i)
       (fillarray next-states nil)
       (let ((next-sym (nth i rhs)))
         (jez-do-set (cur-state cur-states)
-          (jez-dbg "cur-state:%S ltx:%S" cur-state (aref state->tx* cur-state))
           (dolist (leaving-tx (aref state->tx* cur-state))
             (cl-assert (= (jez-tx-to leaving-tx) cur-state))
             (when (= (jez-tx-via leaving-tx) next-sym)
@@ -588,12 +578,10 @@ transition numbers possible nonterminal transitions."
     ;; states p in P such that the transition moves us over an A.
     (let ((result (make-bool-vector (length ntt) nil)))
       (jez-do-set (p cur-states)
-        (jez-dbg "in final cur-state: %S" p)
         (dolist (nttn (aref state->nttn p))
           (let ((tx (aref ntt nttn)))
             (when (= (jez-tx-via tx) goal-symno)
               (aset result nttn t)))))
-      (jez-dbg "LOOKBACK result:%S" (cl-coerce result 'vector))
       result)))
 
 (defun jez-lr-READS-impl (txdb nullability nttn1)
@@ -642,13 +630,13 @@ returned vector is true if the following relation holds:
 (defun jez-lr-precompute-include-table (txdb nullability)
   "Create a table used for `jez-lr-INCLUDES-impl'.
 
-We create a table mapping every symbol C to a possibly-empty list
-of tuples (P . i), where P is a production number and i is a
-zero-based index into that production such that the (i-1)th entry
-is C and everything in the production from i to the end is
-nullable.  This list can contain multiple tuples with the same P
-value because a non-terminal can both be nullable and appear in
-the same production rule more than once.
+We create a table (a vector) mapping every symbol C to a
+possibly-empty list of tuples (P . i), where P is a production
+number and i is a zero-based index into that production such that
+the (i-1)th entry is C and everything in the production from i to
+the end is nullable.  This list can contain multiple tuples with
+the same P value because a non-terminal can both be nullable and
+appear in the same production rule more than once.
 
 For example, if we have production 42: A→C D B E, with E
 nullable, then a table entry for B will be (42 . 2).  If we have
@@ -692,7 +680,7 @@ the tuples for each symbol number."
     (cl-assert (jez-lr-assert-valid-include-table txdb ictb))
     ictb))
 
-(defun jez-lr-INCLUDES-impl (txdb ictb state->tx* nttn1)
+(defun jez-lr-INCLUDES-impl (txdb ictb state->tx* state->nttn nttn1)
   "Implement the INCLUDES relation.
 
 TXDB is a transitions database.  INCLUDES is conceptually a
@@ -702,8 +690,11 @@ non-terminal transitions in TXDB where each index y is a NTTN2 as
 defined below.  ICDB is a table as computed by
 `jez-lr-precompute-include-table'.  STATE-TX* maps LR0 state
 numbers to lists of transition objects (not non-terminal
-transition numbers!) that arrive at those state numbers.  An
-element NTTN2 in the returned vector is true of the following
+transition numbers!) that arrive at those state numbers.
+STATE->NTTN maps LR0 state numbers to non-terminal transitions
+leaving that state.
+
+An element NTTN2 in the returned vector is true of the following
 relation holds:
 
   NTTN1 = NTTN of p1 -A->
@@ -712,7 +703,7 @@ relation holds:
   (p1,A) INCLUDES (p2,B) iff
     B→βAγ
   and
-    NULLABLE(γ)
+    γ→ε
   and
     p2 --β--> p1"
 
@@ -727,16 +718,24 @@ relation holds:
 
   (let* ((ntt (jez-txdb--ntt txdb))
          (nr-ntt (length ntt))
-         (found (make-bool-vector nr-ntt nil))
          (A (jez-tx-via (aref ntt nttn1)))
          (lr (jez-txdb--lr txdb))
          (nr-states (length state->tx*))
          (cur-states (make-bool-vector nr-states nil))
          (next-states (make-bool-vector nr-states nil))
-         (productions (jez-lr-productions lr)))
+         (productions (jez-lr-productions lr))
+         (found (make-bool-vector nr-ntt nil)))
+    (jez-dbg "Computing INCLUDES(%d,%s)[ntt %d]"
+             (jez-tx-from (aref ntt nttn1))
+             (jez-lr-symbol-name lr A)
+             nttn1)
     ;; Loop over all B→βAγ, simulating an NFA (which is the reverse of
     ;; the handle-finding LR DFA).
     (dolist (np (aref ictb A))
+      (jez-dbg "Found precomputed nullable tail: %s"
+               (jez-dbg-format-item
+                (jez-lr-make-item (car np) (cdr np))
+                lr))
       ;; Begin with current state equal to p1.
       (fillarray cur-states nil)
       (aset cur-states (jez-tx-from (aref ntt nttn1)) t)
@@ -756,29 +755,25 @@ relation holds:
         ;; for all states Y such that Y ->C-> x, x ∈ X.  On the third
         ;; iteration, we terminate the loop because i drops below
         ;; zero, indicating that we've run out of prefix symbols.
-        ;;
-        ;; Alternatively, if prefix-length is 0, i is -1, and nttn1
-        ;; itself satisfies the relation (with p1 = p2 and β = ε), so
-        ;; we add nttn1 to the result set directly instead of
-        ;; simulating the NFA.
-        ;;
-        (if (= i -1)
-            (aset found nttn1 t)
-          (while (<= 0 i)
-            (let ((sym (nth i rhs)))
-              (fillarray next-states nil)
-              (jez-do-set (cur-state cur-states)
-                (dolist (leaving-tx (aref state->tx* cur-state))
-                  (cl-assert (= (jez-tx-to leaving-tx) cur-state))
-                  (when (eq (jez-tx-via leaving-tx) sym)
-                    (aset next-states (jez-tx-from leaving-tx) t))
-                  (when (= i 0)
-                    (let ((nttn (jez-txdb-tx->nttn txdb leaving-tx)))
-                      (when nttn
-                        (aset found nttn t)))))))
-            (cl-psetf cur-states next-states
-                      next-states cur-states)
-            (decf i)))))
+        (while (<= 0 i)
+          (let ((sym (nth i rhs)))
+            (fillarray next-states nil)
+            (jez-do-set (cur-state cur-states)
+              (dolist (leaving-tx (aref state->tx* cur-state))
+                (cl-assert (= (jez-tx-to leaving-tx) cur-state))
+                (when (eq (jez-tx-via leaving-tx) sym)
+                  (aset next-states (jez-tx-from leaving-tx) t)))))
+          (cl-psetf cur-states next-states
+                    next-states cur-states)
+          (decf i))
+        ;; Now in cur-states we have all p2 that might satisfy the
+        ;; relation.  Add each matching transition (p2,B) out of our
+        ;; final state to the result set.
+        (let ((B (car prod)))
+          (jez-do-set (p2 cur-states)
+            (dolist (nttn2 (aref state->nttn p2))
+              (when (eq (jez-tx-via (aref ntt nttn2)) B)
+                (aset found nttn2 t)))))))
     found))
 
 (defun jez-lr-Dr-impl (txdb nttn)
@@ -799,15 +794,105 @@ terminals in TXDB's LR.
   (let* ((lr (jez-txdb--lr txdb))
          (min-nonterm (jez-lr-min-nonterm lr))
          (Dr (make-bool-vector min-nonterm nil))
-         (r (jez-tx-to (jez-txdb-nttn->tx txdb nttn))))
-    (jez-dbg "XXX nttn:%S r:%S" nttn r)
-    (when (eq nttn 0)
-      (aset Dr (jez-lr-end-sym lr) t))
+         (orig-tx (jez-txdb-nttn->tx txdb nttn))
+         (r (jez-tx-to orig-tx)))
     (dolist (tx (jez-txdb--transitions txdb))
       (when (and (= (jez-tx-from tx) r)
                  (< (jez-tx-via tx) min-nonterm))
         (aset Dr (jez-tx-via tx) t)))
     Dr))
+
+(defun jez-dbg-relation (relation relation-name nr-ntt)
+  (dotimes (nttn1 nr-ntt)
+    (jez-dbg "%s(%d): %s"
+             relation-name
+             nttn1
+             (jez-dbg-format-stateset
+              (funcall relation nttn1)))))
+
+(defun jez-dbg-tset (set set-name nr-ntt lr)
+  (dotimes (nttn nr-ntt)
+    (jez-dbg "%s(%d): %s"
+             set-name
+             nttn
+             (jez-dbg-format-symset
+              (funcall set nttn)
+              lr))))
+
+(defun jez-dbg-format-stateset (stateset)
+  (with-output-to-string
+      (cond ((not stateset)
+             (princ "?"))
+            ((= (bool-vector-count-population stateset) 0)
+             (princ "∅"))
+            (t
+             (let ((f t))
+               (princ "{")
+               (jez-do-set (stateno stateset)
+                 (if f (setf f nil) (princ " "))
+                 (princ (format "%d" stateno)))
+               (princ "}"))))))
+
+(defun jez-dbg-format-symset (symset lr)
+  (with-output-to-string
+      (cond ((not symset)
+             (princ "?"))
+            ((= (bool-vector-count-population symset) 0)
+             (princ "∅"))
+            (t
+             (let ((f t))
+               (princ "{")
+               (jez-do-set (symno symset)
+                 (if f (setf f nil) (princ " "))
+                 (princ (jez-lr-symbol-name lr symno)))
+               (princ "}"))))))
+
+(defun jez-dbg-format-item (item lr &optional la)
+  (with-output-to-string
+      (let* ((prodno (jez-lr-item-prodno item))
+             (dotpos (jez-lr-item-dotpos item))
+             (prod (aref (jez-lr-productions lr) prodno))
+             (lhs (car prod))
+             (rhs (cdr prod)))
+        (princ (jez-lr-symbol-name lr lhs))
+        (princ "→")
+        (dotimes (i (length rhs))
+          (when (= i dotpos)
+            (princ "•"))
+          (princ (jez-lr-symbol-name lr (nth i rhs))))
+        (when (= dotpos (length rhs))
+          (princ "•")
+          (when la
+            (princ "    ")
+            (princ (jez-dbg-format-symset (gethash item la) lr)))))))
+
+(defun jez-dbg-format-prodno (prodno lr)
+  (jez-dbg-format-item (jez-lr-make-item prodno -1) lr))
+
+(defun jez-dbg-LOOKBACK (LOOKBACK states lr)
+  (let ((productions (jez-lr-productions lr)))
+    (dotimes (stateno (length states))
+      (let ((state (aref states stateno)))
+        (dolist (item state)
+          (let* ((prodno (jez-lr-item-prodno item))
+                 (dotpos (jez-lr-item-dotpos item))
+                 (prod (aref (jez-lr-productions lr) prodno))
+                 (rhs (cdr prod)))
+            (when (= (length rhs) dotpos)
+              (jez-dbg "LOOKBACK(%d, %s): %s"
+                       stateno
+                       (jez-dbg-format-item item lr)
+                       (jez-dbg-format-stateset
+                        (funcall LOOKBACK stateno prod))))))))))
+
+(defun jez-dbg-INCLUDES-table (INCLUDES-table lr)
+  (dotimes (symno (jez-lr-number-symbols lr))
+    (dolist (entry (aref INCLUDES-table symno))
+      (jez-dbg "INCLUDES-table(%s): %s"
+               (jez-lr-symbol-name lr symno)
+               (jez-dbg-format-item
+                (jez-lr-make-item (car entry) (cdr entry))
+                lr)))))
 
 (defun jez-make-lalr-table (lr states txdb)
   "Compute LALR(1) information for LR.
@@ -836,12 +921,14 @@ the number of terminals in LR.
   (let* ( ;; Vector mapping symno -> nullability bool
          (nullability (jez-lr-compute-nullability lr))
          (ntt (jez-txdb--ntt txdb))
-         (_ (jez-dbg "ntt: %S" ntt))
          (Dr (lambda (nttn)
                (jez-lr-Dr-impl txdb nttn)))
+         (_ (jez-dbg-tset Dr "Dr" (length ntt) lr))
          (READS (lambda (nttn)
                   (jez-lr-READS-impl txdb nullability nttn)))
+         (_ (jez-dbg-relation READS "READS" (length ntt)))
          (Read (jez-digraph READS Dr (length ntt)))
+         (_ (jez-dbg-tset Read "Read" (length ntt) lr))
 
          ;; Non-terminal transitions indexed by _destination_ state.
          ;; Array maps states to jez-tx objects where the array index
@@ -856,14 +943,7 @@ the number of terminals in LR.
 
          (INCLUDES-table
           (jez-lr-precompute-include-table txdb nullability))
-
-         (INCLUDES (lambda (nttn)
-                     (jez-lr-INCLUDES-impl
-                      txdb
-                      INCLUDES-table
-                      state->tx*
-                      nttn)))
-         (Follow (jez-digraph INCLUDES Read (length ntt)))
+         (_ (jez-dbg-INCLUDES-table INCLUDES-table lr))
 
          (state->nttn
           (let ((state->nttn (make-vector (length states) nil)))
@@ -873,6 +953,18 @@ the number of terminals in LR.
                           (jez-tx-from (aref ntt nttn)))))
             state->nttn))
 
+         (INCLUDES (lambda (nttn)
+                     (jez-lr-INCLUDES-impl
+                      txdb
+                      INCLUDES-table
+                      state->tx*
+                      state->nttn
+                      nttn)))
+
+         (_ (jez-dbg-relation INCLUDES "INCLUDES" (length ntt)))
+         (Follow (jez-digraph INCLUDES Read (length ntt)))
+         (_ (jez-dbg-tset Follow "Follow" (length ntt) lr))
+
          (LOOKBACK
           (lambda (q P)
             (jez-lr-LOOKBACK-impl
@@ -881,6 +973,7 @@ the number of terminals in LR.
              state->tx*
              state->nttn
              ntt)))
+         (_ (jez-dbg-LOOKBACK LOOKBACK states lr))
          (LA (make-hash-table :test 'eq))
          (productions (jez-lr-productions lr))
          (nr-terminals (jez-lr-number-terminals lr)))
@@ -942,6 +1035,7 @@ possible: we build arrays indexed by TERMNO.
                                          transitions
                                          &key
                                          numbered-states
+                                         ntt
                                          numbered-ntt
                                          la)
   (let ((productions (jez-lr-productions lr)))
@@ -958,35 +1052,7 @@ possible: we build arrays indexed by TERMNO.
           (if needbr
               (princ "<br/>")
             (setf needbr t))
-          (let* ((prodno (jez-lr-item-prodno item))
-                 (dotpos (jez-lr-item-dotpos item))
-                 (prod (aref productions prodno))
-                 (lhs (car prod))
-                 (rhs (cdr prod)))
-            (princ (xml-escape-string (jez-lr-symbol-name lr lhs)))
-            (princ "→")
-            (dotimes (i (length rhs))
-              (when (= i dotpos)
-                (princ "•"))
-              (princ (xml-escape-string (jez-lr-symbol-name
-                                         lr
-                                         (nth i rhs)))))
-            (when (= dotpos (length rhs))
-              (princ "•")
-
-              (when la
-                (princ "&nbsp;&nbsp;&nbsp;&nbsp;")
-                (let ((item-la (gethash item la)))
-                  (cond ((not item-la)
-                         (princ "?"))
-                        ((= (bool-vector-count-population item-la) 0)
-                         (princ "∅"))
-                        (t
-                         (let ((f t))
-                           (jez-do-set (symno item-la)
-                             (if f (setf f nil) (princ " "))
-                             (princ (xml-escape-string
-                                     (jez-lr-symbol-name lr symno))))))))))))
+          (princ (xml-escape-string (jez-dbg-format-item item lr la))))
         (princ ">]")
         (princ ";\n")))
     (princ (format "hidden_start [style=invis];\n"))
@@ -997,7 +1063,11 @@ possible: we build arrays indexed by TERMNO.
       (princ (format "[label=<%s>]"
                      (xml-escape-string
                       (concat
-                       ""
+                       (or (and numbered-ntt
+                                (let ((pos (cl-position tx ntt :test 'eq)))
+                                  (and pos
+                                       (format "NTT%d: " pos))))
+                           "")
                        (jez-lr-symbol-name lr (jez-tx-via tx))))))
       (princ ";\n"))
     (princ (format "hidden_start -> state_0;\n"))
@@ -1007,7 +1077,9 @@ possible: we build arrays indexed by TERMNO.
                               &key
                               keep-dotfile
                               numbered-states
-                              la-type)
+                              numbered-ntt
+                              la-type
+                              background)
   (jez-with-named-temp-file (dotfile "jez-view" nil ".dot")
     (jez-with-named-temp-file (pdffile "jez-view" nil ".pdf")
      (with-temp-file dotfile
@@ -1024,12 +1096,19 @@ possible: we build arrays indexed by TERMNO.
             states
             (jez-txdb--transitions txdb)
             :numbered-states numbered-states
+            :numbered-ntt numbered-ntt
+            :ntt (jez-txdb--ntt txdb)
             :la la))))
      (shell-command (format "dot -Tpdf %s > %s"
                             (shell-quote-argument dotfile)
                             (shell-quote-argument pdffile)))
-     (shell-command (format "evince %s 2>/dev/null"
-                            (shell-quote-argument pdffile)))
+     (let ((cmd (format "evince %s 2>/dev/null"
+                        (shell-quote-argument pdffile))))
+       (if background
+           (progn
+             (async-shell-command cmd)
+             (sleep-for 1)))
+       (shell-command cmd))
      (when keep-dotfile
        (setf dotfile nil)))))
 
