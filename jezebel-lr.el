@@ -27,7 +27,10 @@
 
 (autoload 'xml-escape-string "xml")
 
-(cl-defstruct jez-lr
+(cl-defstruct (jez-lr
+               (:constructor jez-lr--make)
+               (:copier nil)
+               (:conc-name jez-lr--))
   ;; Hash mapping syms (terminals and nonterminals) to allocated
   ;; numbers.
   sym->symno
@@ -44,7 +47,46 @@
 
   ;; Array mapping (- SYMNO MIN-NONTERM) to list of productions that
   ;; produce SYMNO.  Query with jez-lr-production-rules-for-symbol.
-  produces)
+  produces
+
+  ;; List of LR0 states.  Vector of states, where each state is an
+  ;; ordered list of LR(0) items, each item being a jez-lr-item
+  ;; object.  The ordering of elemets within states is given by
+  ;; jez-lr0-item-<. The ordering of items within each state has no
+  ;; significance except to ensure that equal states are EQUAL.
+  ;;
+  ;; Do not access this field directly; use `jez-lr-states', which
+  ;; lazily computes the automaton.
+  states
+
+  ;; List of all transitions, each one a list (FROM VIA . TO); use the
+  ;; jez-tx- accessors to access fields of the objects.  Do not access
+  ;; this field directly; use `jez-lr-transitions', which lazily
+  ;; computes the automaton.
+  transitions
+
+  ;; Vector of transitions; maps non-terminal transition numbers to
+  ;; transition objects.  (Note that terminal transitions do not have
+  ;; numbers and are not on this vector.)  Do not access this field
+  ;; directly; use `jez-lr-ntt', which lazily computes the table.
+  ntt
+
+  ;; Bool vector mapping symbol numbers to nullability.  Do not access
+  ;; this field directly; use `jez-lr-nullability', which lazily
+  ;; computes the table.
+  nullability
+
+  ;; Hash table mapping reduce items to lookahead sets.  Do not access
+  ;; this field directly; use `jez-lr-lookaheads', which lazily
+  ;; computes the table.
+  lookaheads)
+
+;; Aliases for properties of jez-lr that we compute eagerly
+;; at construction time instead of lazily.
+(defalias 'jez-lr-productions 'jez-lr--productions)
+(defalias 'jez-lr-produces 'jez-lr--produces)
+(defalias 'jez-lr-min-nonterm 'jez-lr--min-nonterm)
+(defalias 'jez-lr-sym->symno 'jez-lr--sym->symno)
 
 (defun jez-lr-number-symbols (lr)
   "Return the total number of symbols in LR."
@@ -89,7 +131,7 @@
   (cons prodno dotpos))
 
 (defun jez-lr-slurp-grammar (rules terminals start)
-  "Construct a jez-lr object.
+  "Construct a `jez-lr' object.
 RULES is a list of productions.  Each production is a cons of the
 form (LHS . RHS), where LHS produces RHS.  LHS is a non-terminal
 symbol; RHS is a list of terminal and non-terminal symbols.
@@ -172,13 +214,13 @@ is a number associated with that terminal. "
                       (aref produces (- nontermno min-nonterm))))
 
       ;; Return a jez-lr object embodying the parsed, checked grammar.
-      (make-jez-lr
+      (jez-lr--make
        :sym->symno sym->symno
        :min-nonterm min-nonterm
        :productions productions
        :produces produces))))
 
-(defun jez-lr-compute-nullability (lr)
+(defun jez-lr--compute-nullability (lr)
   "Compute the nullability information for LR.
 LR is an LR object. Return is a bool vector giving the
 nullability for each symbol."
@@ -197,6 +239,14 @@ nullability for each symbol."
                    (setf changed t))
               finally return changed)
      finally return nullability))
+
+(defun jez-lr-nullability (lr)
+  "Compute and memoize nullability information for this LR.
+Return a bool vector mapping each symbol number to its
+nullability."
+  (or (jez-lr--nullability lr)
+      (setf (jez-lr--nullability lr)
+            (jez-lr--compute-nullability lr))))
 
 (defun jez-lr-production-rules-for-symbol (lr symno)
   "Find what production rules produce nonterminal SYMNO.
@@ -290,7 +340,7 @@ of LR(0) items."
 FROM is the state number being transitioned from.  VIA is the
 symbol number on which the transition is happening.  TO is the
 destination state number."
-  (list* from via to))
+  (cl-list* from via to))
 
 (defun jez-tx-from (transition)
   (car transition))
@@ -301,18 +351,14 @@ destination state number."
 (defun jez-tx-to (transition)
   (cddr transition))
 
-(defun jez-compute-lr0-states (lr)
+(defun jez-lr--compute-lr0-automaton (lr)
   "Compute the LR(0) DFA for grammar LR.
-Return a list (STATES TRANSITIONS).
+Update the `states' and `transitions' fields of LR by side
+effect."
 
-STATES is a vector of states, where each state is an ordered list
-of LR(0) items, each item being a jez-lr-item object.  The
-ordering of elemets within states is given by jez-lr0-item-<.
-The ordering of items within each state has no significance
-except to ensure that equal states are EQUAL.
+  (cl-assert (null (jez-lr--states lr)))
+  (cl-assert (null (jez-lr--transitions lr)))
 
-TRANSITIONS is a jez-txdb object that describes the transitions.
-"
   (let ((stateno 0)
         (statehash (make-hash-table :test 'equal))
         (nsymbols (jez-lr-number-symbols lr))
@@ -332,7 +378,7 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
     ;; N.B. Because the initial production of our grammar is always
     ;; production number zero, and the dot is always at the left end
     ;; of this production in the initial state, we can hardcode '(0 0)
-    ;; below.
+    ;; in the call to `jez-lr0-closure' below.
 
     (setf current-state (jez-lr0-closure lr '((0 . 0))))
     (push (cons 0 current-state) to-process)
@@ -370,58 +416,37 @@ TRANSITIONS is a jez-txdb object that describes the transitions.
                 transitions))))
     ;; Done.  Reverse the state list because we accumulated it by
     ;; consing onto the front instead of appending to the end.
-    (list (apply #'vector (nreverse state-list))
-          (jez-make-txdb
-           (nreverse transitions)
-           lr))))
+    (setf (jez-lr--states lr) (apply #'vector (nreverse state-list)))
+    (setf (jez-lr--transitions lr) (nreverse transitions))))
 
-(cl-defstruct (jez-txdb
-               (:constructor jez--make-txdb)
-               (:copier nil)
-               (:conc-name jez-txdb--))
-  ;; List of all transitions, each one a list (FROM VIA . TO); use the
-  ;; jez-tx- accessors to access fields of the objects.
-  transitions
-  ;; Vector of transitions; maps non-terminal transition numbers to
-  ;; transition objects.
-  ntt
-  ;; lr object associated with this txdb
-  lr)
+(defun jez-lr-states (lr)
+  "Return the automaton states in LR.
+See the defintion of `jez-lr' for the format of the state
+database."
+  (or (jez-lr--states lr)
+      (progn (jez-lr--compute-lr0-automaton lr)
+             (jez-lr--states lr))))
 
-(defun jez-make-txdb (transition-list lr)
-  "Make an object that can be used to query transitions.
-TRANSITION-LIST is a list of transition objects.  LR is the LR
-object.  Note that the returned structure references
-TRANSITION-LIST by reference.  Either guarantee its immutability
-or supply a copy. "
-  (jez--make-txdb
-   :transitions transition-list
-   :ntt (apply #'vector
-               (cl-loop
-                  for transition in transition-list
-                  for via = (jez-tx-via transition)
-                  when (>= via (jez-lr-min-nonterm lr))
-                  collect transition))
-   :lr lr))
+(defun jez-lr-transitions (lr)
+  "Return the transitions between states of LR.
+See the definition of `jez-lr' for the format of the transition
+database."
+  (or (jez-lr--transitions lr)
+      (progn (jez-lr--compute-lr0-automaton lr)
+             (jez-lr--transitions lr))))
 
-(defun jez-txdb-nttn->tx (txdb nttn)
-  "Find a non-terminal transition by number.
-TXDB is a transition database object.  NTTN is a non-terminal
-transition number.  Return a jez-tx object."
-  (aref (jez-txdb--ntt txdb) nttn))
-
-(defun jez-txdb-tx->nttn (txdb tx)
-  "Find a non-terminal transition number."
-  (cl-loop
-     with ntt = (jez-txdb--ntt txdb)
-     for nttn below (length ntt)
-     when (eq tx (aref ntt nttn))
-     return ntt))
-
-(defun jez-txdb-number-nttns (txdb)
-  "Return the number of nonterminal transitions.
-TXDB is a transition database object. "
-  (length (jez-txdb--ntt txdb)))
+(defun jez-lr-ntt (lr)
+  "Return the nonterminal transition map for LR.
+See the definition of `jez-lr' for the format
+of the array."
+  (or (jez-lr--ntt lr)
+      (setf (jez-lr--ntt lr)
+            (apply #'vector
+                   (cl-loop
+                      for transition in (jez-lr-transitions lr)
+                      for via = (jez-tx-via transition)
+                      when (>= via (jez-lr-min-nonterm lr))
+                      collect transition)))))
 
 (cl-defmacro jez-do-set ((i bv) &rest body)
   "Iterate over the true elements of bool-vector BV.
@@ -584,17 +609,17 @@ transition numbers possible nonterminal transitions."
               (aset result nttn t)))))
       result)))
 
-(defun jez-lr-READS-impl (txdb nullability nttn1)
+(defun jez-lr-READS-impl (ntt nullability nttn1)
   "Implement the READS relation.
-TXDB is a transition database.  NULLABILITY is a bool vector that
-maps symbol numbers to true if that symbol is nullable; of
-course, only non-terminals are nullable.
+NTT is a nonterminal transition map.  NULLABILITY is a bool
+vector that maps symbol numbers to true if that symbol is
+nullable; of course, only non-terminals are nullable.
 
 READS is conceptually a binary relation, but we implement it as a
 set-valued function.  Return a bool vector of cardinality equal
-to the number of non-terminal transitions in TXDB where each
-index y is a NTTN2 as defined below.  An element NTTN2 in the
-returned vector is true if the following relation holds:
+to the number of non-terminal transitions where each index y is a
+NTTN2 as defined below.  An element NTTN2 in the returned vector
+is true if the following relation holds:
 
   NTTN1 = NTTN of p -A-> r
   NTTN2 = NTTN of r -C->
@@ -602,8 +627,7 @@ returned vector is true if the following relation holds:
     p -A-> r -C->
   and
     NULLABLE(C)"
-  (let* ((ntt (jez-txdb--ntt txdb))
-         (nr-ntt (length ntt))
+  (let* ((nr-ntt (length ntt))
          (r (jez-tx-to (aref ntt nttn1)))
          (found (make-bool-vector nr-ntt nil)))
     (dotimes (nttn2 nr-ntt)
@@ -613,9 +637,11 @@ returned vector is true if the following relation holds:
           (aset found nttn2 t))))
     found))
 
-(defun jez-lr-assert-valid-include-table (txdb ictb)
-  (let* ((lr (jez-txdb--lr txdb))
-         (productions (jez-lr-productions lr)))
+(defun jez-lr-assert-valid-include-table (lr ictb)
+  "Assert the validity of a precomputed include table.
+LR is a `jez-lr' object.  ICTB is the table to inspect.  Return t
+or signal assertion failure."
+  (let* ((productions (jez-lr-productions lr)))
     (cl-assert (= (length ictb) (jez-lr-number-symbols lr)))
     (dotimes (symno (length ictb))
       (cl-assert (listp (aref ictb symno)))
@@ -627,7 +653,7 @@ returned vector is true if the following relation holds:
           (cl-assert (eq (nth dotpos rhs) symno)))))
     t))
 
-(defun jez-lr-precompute-include-table (txdb nullability)
+(defun jez-lr-precompute-include-table (lr nullability)
   "Create a table used for `jez-lr-INCLUDES-impl'.
 
 We create a table (a vector) mapping every symbol C to a
@@ -643,13 +669,12 @@ nullable, then a table entry for B will be (42 . 2).  If we have
 another production 43: G→B, then another table entry for B will
 be (43 . 0).
 
-TXDB is a transitions database.  NULLABILITY is a bool vector
-that maps symbol numbers to whether that symbol is nullable.  The
-return value is a vector of length equal to the number of
-symbols; the indices are the symbol numbers and the values are
-the tuples for each symbol number."
-  (let* ((lr (jez-txdb--lr txdb))
-         (nsymbols (jez-lr-number-symbols lr))
+LR is an `jez-lr' object.  NULLABILITY is a bool vector that maps
+symbol numbers to whether that symbol is nullable.  The return
+value is a vector of length equal to the number of symbols; the
+indices are the symbol numbers and the values are the tuples for
+each symbol number."
+  (let* ((nsymbols (jez-lr-number-symbols lr))
          (ictb (make-vector nsymbols nil))
          (min-nonterm (jez-lr-min-nonterm lr))
          (productions (jez-lr-productions lr)))
@@ -677,17 +702,18 @@ the tuples for each symbol number."
                      (>= n min-nonterm))
            do (push (cons prodno i)
                     (aref ictb n)))))
-    (cl-assert (jez-lr-assert-valid-include-table txdb ictb))
+    (cl-assert (jez-lr-assert-valid-include-table lr ictb))
     ictb))
 
-(defun jez-lr-INCLUDES-impl (txdb ictb state->tx* state->nttn nttn1)
+(defun jez-lr-INCLUDES-impl (ictb ntt productions state->tx* state->nttn nttn1)
   "Implement the INCLUDES relation.
 
-TXDB is a transitions database.  INCLUDES is conceptually a
-binary relation, but we implement it as a set-valued function.
+INCLUDES is conceptually a binary relation, but we implement it
+as a set-valued function.  NTT is the result of `jez-lr-ntt'.
+PRODUCTIONS is the result of calling `jez-lr-productions'.
 Return a bool vector of cardinality equal to the number of
-non-terminal transitions in TXDB where each index y is a NTTN2 as
-defined below.  ICDB is a table as computed by
+non-terminal transitions where each index y is a NTTN2 as defined
+below.  ICDB is a table as computed by
 `jez-lr-precompute-include-table'.  STATE-TX* maps LR0 state
 numbers to lists of transition objects (not non-terminal
 transition numbers!) that arrive at those state numbers.
@@ -716,26 +742,15 @@ relation holds:
   ;; Note that backward simulation of a DFA can be non-deterministic,
   ;; so we actually simulate an NFA.
 
-  (let* ((ntt (jez-txdb--ntt txdb))
-         (nr-ntt (length ntt))
+  (let* ((nr-ntt (length ntt))
          (A (jez-tx-via (aref ntt nttn1)))
-         (lr (jez-txdb--lr txdb))
          (nr-states (length state->tx*))
          (cur-states (make-bool-vector nr-states nil))
          (next-states (make-bool-vector nr-states nil))
-         (productions (jez-lr-productions lr))
          (found (make-bool-vector nr-ntt nil)))
-    (jez-dbg "Computing INCLUDES(%d,%s)[ntt %d]"
-             (jez-tx-from (aref ntt nttn1))
-             (jez-lr-symbol-name lr A)
-             nttn1)
     ;; Loop over all B→βAγ, simulating an NFA (which is the reverse of
     ;; the handle-finding LR DFA).
     (dolist (np (aref ictb A))
-      (jez-dbg "Found precomputed nullable tail: %s"
-               (jez-dbg-format-item
-                (jez-lr-make-item (car np) (cdr np))
-                lr))
       ;; Begin with current state equal to p1.
       (fillarray cur-states nil)
       (aset cur-states (jez-tx-from (aref ntt nttn1)) t)
@@ -776,27 +791,27 @@ relation holds:
                 (aset found nttn2 t)))))))
     found))
 
-(defun jez-lr-Dr-impl (txdb nttn)
+(defun jez-lr-Dr-impl (ntt min-nonterm transitions nttn)
   "Provide the directly-reads set.
-TXDB is a transition database for the LR(0) automaton.  NTTN is a
-non-terminal transition number that identifies a transition p
--A-> r.  The function returns a bool-vector describing the set of
-terminals that satisfy the following constraint:
+NTT is the result of calling `jez-lr-ntt'.  MIN-NONTERM is the
+result of calling `jez-lr-min-nonterm'.  TRANSITIONS is the
+result of calling `jez-lr-transitions'.  NTTN is a non-terminal
+transition number that identifies a transition p -A-> r.  The
+function returns a bool-vector describing the set of terminals
+that satisfy the following constraint:
 
   NTTN    = NTTN of p -A-> r
   t       = some terminal
   DR(p,A) = { t ∈ T | p -A-> r -t-> }
 
 The returned bool vector has cardinality equal to the number of
-terminals in TXDB's LR.
+terminals.
 
 "
-  (let* ((lr (jez-txdb--lr txdb))
-         (min-nonterm (jez-lr-min-nonterm lr))
-         (Dr (make-bool-vector min-nonterm nil))
-         (orig-tx (jez-txdb-nttn->tx txdb nttn))
+  (let* ((Dr (make-bool-vector min-nonterm nil))
+         (orig-tx (aref ntt nttn))
          (r (jez-tx-to orig-tx)))
-    (dolist (tx (jez-txdb--transitions txdb))
+    (dolist (tx transitions)
       (when (and (= (jez-tx-from tx) r)
                  (< (jez-tx-via tx) min-nonterm))
         (aset Dr (jez-tx-via tx) t)))
@@ -870,20 +885,19 @@ terminals in TXDB's LR.
   (jez-dbg-format-item (jez-lr-make-item prodno -1) lr))
 
 (defun jez-dbg-LOOKBACK (LOOKBACK states lr)
-  (let ((productions (jez-lr-productions lr)))
-    (dotimes (stateno (length states))
-      (let ((state (aref states stateno)))
-        (dolist (item state)
-          (let* ((prodno (jez-lr-item-prodno item))
-                 (dotpos (jez-lr-item-dotpos item))
-                 (prod (aref (jez-lr-productions lr) prodno))
-                 (rhs (cdr prod)))
-            (when (= (length rhs) dotpos)
-              (jez-dbg "LOOKBACK(%d, %s): %s"
-                       stateno
-                       (jez-dbg-format-item item lr)
-                       (jez-dbg-format-stateset
-                        (funcall LOOKBACK stateno prod))))))))))
+  (dotimes (stateno (length states))
+    (let ((state (aref states stateno)))
+      (dolist (item state)
+        (let* ((prodno (jez-lr-item-prodno item))
+               (dotpos (jez-lr-item-dotpos item))
+               (prod (aref (jez-lr-productions lr) prodno))
+               (rhs (cdr prod)))
+          (when (= (length rhs) dotpos)
+            (jez-dbg "LOOKBACK(%d, %s): %s"
+                     stateno
+                     (jez-dbg-format-item item lr)
+                     (jez-dbg-format-stateset
+                      (funcall LOOKBACK stateno prod)))))))))
 
 (defun jez-dbg-INCLUDES-table (INCLUDES-table lr)
   (dotimes (symno (jez-lr-number-symbols lr))
@@ -894,16 +908,9 @@ terminals in TXDB's LR.
                 (jez-lr-make-item (car entry) (cdr entry))
                 lr)))))
 
-(defun jez-make-lalr-table (lr states txdb)
+(defun jez-lr--compute-lookaheads-lalr (lr)
   "Compute LALR(1) information for LR.
-
-STATES is an ordered vector of states, where each state is an
-ordered list of LR(0) items, each item being of the form (PRODNO
-. DOTPOS).  The ordering is by jez-lr0-item-<.  The ordering of
-items within each state has no significance except to ensure that
-equal states are EQUAL.
-
-TXDB is a transaction database.
+LR is a `jez-lr' object.
 
 Return LA.  LA is a hash table mapping each reduce item to a
 lookahead set; a lookahead set is a bool vector of size equal to
@@ -919,16 +926,21 @@ the number of terminals in LR.
   ;; functions.
 
   (let* ( ;; Vector mapping symno -> nullability bool
-         (nullability (jez-lr-compute-nullability lr))
-         (ntt (jez-txdb--ntt txdb))
+         (nullability (jez-lr-nullability lr))
+         (ntt (jez-lr-ntt lr))
+         (min-nonterm (jez-lr-min-nonterm lr))
+         (productions (jez-lr-productions lr))
+         (transitions (jez-lr-transitions lr))
          (Dr (lambda (nttn)
-               (jez-lr-Dr-impl txdb nttn)))
+               (jez-lr-Dr-impl ntt min-nonterm transitions nttn)))
          (_ (jez-dbg-tset Dr "Dr" (length ntt) lr))
          (READS (lambda (nttn)
-                  (jez-lr-READS-impl txdb nullability nttn)))
+                  (jez-lr-READS-impl ntt nullability nttn)))
          (_ (jez-dbg-relation READS "READS" (length ntt)))
          (Read (jez-digraph READS Dr (length ntt)))
          (_ (jez-dbg-tset Read "Read" (length ntt) lr))
+
+         (states (jez-lr-states lr))
 
          ;; Non-terminal transitions indexed by _destination_ state.
          ;; Array maps states to jez-tx objects where the array index
@@ -936,13 +948,13 @@ the number of terminals in LR.
          (state->tx*
           (cl-loop
              with state->tx* = (make-vector (length states) nil)
-             for tx in (jez-txdb--transitions txdb)
+             for tx in transitions
              for to = (jez-tx-to tx)
              do (push tx (aref state->tx* to))
              finally return state->tx*))
 
          (INCLUDES-table
-          (jez-lr-precompute-include-table txdb nullability))
+          (jez-lr-precompute-include-table lr nullability))
          (_ (jez-dbg-INCLUDES-table INCLUDES-table lr))
 
          (state->nttn
@@ -955,8 +967,9 @@ the number of terminals in LR.
 
          (INCLUDES (lambda (nttn)
                      (jez-lr-INCLUDES-impl
-                      txdb
                       INCLUDES-table
+                      ntt
+                      productions
                       state->tx*
                       state->nttn
                       nttn)))
@@ -975,7 +988,6 @@ the number of terminals in LR.
              ntt)))
          (_ (jez-dbg-LOOKBACK LOOKBACK states lr))
          (LA (make-hash-table :test 'eq))
-         (productions (jez-lr-productions lr))
          (nr-terminals (jez-lr-number-terminals lr)))
     (dotimes (stateno (length states))
       (let ((state (aref states stateno)))
@@ -997,38 +1009,13 @@ the number of terminals in LR.
                 (puthash item item-LA LA)))))))
     LA))
 
-(defun jez-make-lr-parser (grammar)
-  "Generate an LR parse table from GRAMMAR.
-
-GRAMMAR is a list of the form (PRODUCTIONS TERMINALS START).  We
-expect higher-level code to have produced a grammar of this form
-from a user-specified grammar written in something more
-`rx'-like.
-
-PRODUCTIONS is a list of the form
-
-  (NONTERM SYM_1 SYM_2... SYM_N)
-
-where each SYM is either a Lisp symbol describing either a
-terminal or a Lisp symbol listed in TERMINALS.  Empty productions
-are allowed, as are unrestricted left and right recursion.
-
-TERMINALS is a list in which each element is of the form
-
-  (TERM . TERMNO)
-
-where each TERM is a Lisp symbol and terminal symbol in GRAMMAR,
-and TERMNO is a Lisp integer that the lexer will eventually
-supply to the grammar parser in order to drive it forward.  For
-maximum efficiency, the maximum TERMNO should be as small as
-possible: we build arrays indexed by TERMNO.
-"
-
-  (let* ((rules (first grammar))
-         (terminals (second grammar))
-         (lr (jez-lr-slurp-grammar rules terminals 'start))))
-
-  )
+(defun jez-lr-lookaheads (lr)
+  "Return reduce-item lookaheads for LR.
+See the definition of `jez-lr' for the format of the
+resulting table."
+  (or (jez-lr--lookaheads lr)
+      (setf (jez-lr--lookaheads lr)
+            (jez-lr--compute-lookaheads-lalr lr))))
 
 (cl-defun jez-describe-automaton-dotviz (lr
                                          states
@@ -1038,40 +1025,39 @@ possible: we build arrays indexed by TERMNO.
                                          ntt
                                          numbered-ntt
                                          la)
-  (let ((productions (jez-lr-productions lr)))
-    (princ "digraph {\n")
-    (dotimes (stateno (length states))
-      (let ((needbr nil)
-            (state (aref states stateno)))
-        (princ (format "state_%d " stateno))
-        (princ "[label=<")
-        (when numbered-states
-          (princ (format "%d" stateno))
+  (princ "digraph {\n")
+  (dotimes (stateno (length states))
+    (let ((needbr nil)
+          (state (aref states stateno)))
+      (princ (format "state_%d " stateno))
+      (princ "[label=<")
+      (when numbered-states
+        (princ (format "%d" stateno))
+        (setf needbr t))
+      (dolist (item state)
+        (if needbr
+            (princ "<br/>")
           (setf needbr t))
-        (dolist (item state)
-          (if needbr
-              (princ "<br/>")
-            (setf needbr t))
-          (princ (xml-escape-string (jez-dbg-format-item item lr la))))
-        (princ ">]")
-        (princ ";\n")))
-    (princ (format "hidden_start [style=invis];\n"))
-    (dolist (tx transitions)
-      (princ (format "state_%d -> state_%d "
-                     (jez-tx-from tx)
-                     (jez-tx-to tx)))
-      (princ (format "[label=<%s>]"
-                     (xml-escape-string
-                      (concat
-                       (or (and numbered-ntt
-                                (let ((pos (cl-position tx ntt :test 'eq)))
-                                  (and pos
-                                       (format "NTT%d: " pos))))
-                           "")
-                       (jez-lr-symbol-name lr (jez-tx-via tx))))))
-      (princ ";\n"))
-    (princ (format "hidden_start -> state_0;\n"))
-    (princ "}\n")))
+        (princ (xml-escape-string (jez-dbg-format-item item lr la))))
+      (princ ">]")
+      (princ ";\n")))
+  (princ (format "hidden_start [style=invis];\n"))
+  (dolist (tx transitions)
+    (princ (format "state_%d -> state_%d "
+                   (jez-tx-from tx)
+                   (jez-tx-to tx)))
+    (princ (format "[label=<%s>]"
+                   (xml-escape-string
+                    (concat
+                     (or (and numbered-ntt
+                              (let ((pos (cl-position tx ntt :test 'eq)))
+                                (and pos
+                                     (format "NTT%d: " pos))))
+                         "")
+                     (jez-lr-symbol-name lr (jez-tx-via tx))))))
+    (princ ";\n"))
+  (princ (format "hidden_start -> state_0;\n"))
+  (princ "}\n"))
 
 (cl-defun jez-view-automaton (lr
                               &key
@@ -1082,23 +1068,22 @@ possible: we build arrays indexed by TERMNO.
                               background)
   (jez-with-named-temp-file (dotfile "jez-view" nil ".dot")
     (jez-with-named-temp-file (pdffile "jez-view" nil ".pdf")
-     (with-temp-file dotfile
-       (let* ((lr0info (jez-compute-lr0-states lr))
-              (states (nth 0 lr0info))
-              (txdb (nth 1 lr0info))
-              (la (cl-ecase la-type
-                    (:lalr
-                     (jez-make-lalr-table lr states txdb))
-                    ((nil) nil))))
-         (let ((standard-output (current-buffer)))
-           (jez-describe-automaton-dotviz
-            lr
-            states
-            (jez-txdb--transitions txdb)
-            :numbered-states numbered-states
-            :numbered-ntt numbered-ntt
-            :ntt (jez-txdb--ntt txdb)
-            :la la))))
+      (with-temp-file dotfile
+        (let* ((states (jez-lr-states lr))
+               (transitions (jez-lr-transitions lr))
+               (ntt (jez-lr-ntt lr))
+               (la (cl-ecase la-type
+                     ((:lalr) (jez-lr-lookaheads lr))
+                     ((nil) nil)))
+               (standard-output (current-buffer)))
+          (jez-describe-automaton-dotviz
+           lr
+           states
+           transitions
+           :numbered-states numbered-states
+           :numbered-ntt numbered-ntt
+           :ntt ntt
+           :la la)))
      (shell-command (format "dot -Tpdf %s > %s"
                             (shell-quote-argument dotfile)
                             (shell-quote-argument pdffile)))
