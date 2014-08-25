@@ -11,10 +11,10 @@
   '((top "hello")
     (foo bar qux)))
 
-(defun* jezt-hash-rmap (value
-                        table
-                        &optional (test #'eq)
-                        &aux result)
+(cl-defun jezt-hash-rmap (value
+                          table
+                          &optional (test #'eq)
+                          &aux result)
   "Find a key in TABLE mapping to VALUE."
   (maphash (lambda (hkey hvalue)
              (when (funcall test hvalue value)
@@ -22,20 +22,20 @@
            table)
   result)
 
-(defun* jezt-find-irn (parser name)
-  "Find the IR node named NAME.  Return nil if 
+(cl-defun jezt-find-irn (parser name)
+  "Find the IR node named NAME.  Return nil if
 no such node exists in PARSER."
   (jezt-hash-rmap name
                   (jez-parser--node-names parser)))
 
-(defun* jezt-find-primitive (parser name)
+(cl-defun jezt-find-primitive (parser name)
   "Find the primitive that compiled down to NAME."
   (let ((irn (if (jez-irn-p name)
                  name
                (jezt-find-irn parser name))))
     (jezt-hash-rmap irn nil)))
 
-(defun* jezt-describe-irn (parser irn)
+(cl-defun jezt-describe-irn (parser irn)
   (let* ((type (jez-struct-type irn))
          (type-name (progn (string-match "^jez-\\(.*\\)$"
                                          (symbol-name type))
@@ -53,7 +53,7 @@ no such node exists in PARSER."
                       (format " result:%S"
                               (jez-end-state--result irn)))))))
 
-(defun* jezt-describe-stackent (parser val)
+(cl-defun jezt-describe-stackent (parser val)
   (let (irn)
     (cond ((and (symbolp val)
                 (fboundp val)
@@ -63,26 +63,26 @@ no such node exists in PARSER."
           (t
            (prin1 val)))))
 
-(defun* jezt-describe-state (state stepno point)
+(cl-defun jezt-describe-state (state stepno point)
   (princ (format "step %d point:%d\n" stepno point))
   (jez-with-slots (and-stack or-stack)
       (jez-state state)
-    
+
     (princ (format "and-stack:%S\n" and-stack))
     (loop for val in and-stack
-          for i upfrom 0
-          do (progn
-               (princ (format " %2d: " i))
-               (jezt-describe-stackent nil val)
-               (princ "\n")))
+       for i upfrom 0
+       do (progn
+            (princ (format " %2d: " i))
+            (jezt-describe-stackent nil val)
+            (princ "\n")))
 
     (princ "\nor-stack:\n")
     (loop for val in or-stack
-          for i upfrom 0
-          do (progn
-               (princ (format " %2d: " i))
-               (jezt-describe-stackent nil val)
-               (princ "\n")))))
+       for i upfrom 0
+       do (progn
+            (princ (format " %2d: " i))
+            (jezt-describe-stackent nil val)
+            (princ "\n")))))
 
 (defconst jezt-parse-debug-keymap
   (let ((keymap (make-sparse-keymap)))
@@ -103,7 +103,7 @@ no such node exists in PARSER."
    "(edit:\\[recursive-edit]) "
    "(quit:q) "))
 
-(defun* jezt-try-parse (grammar text &optional debug)
+(cl-defun jezt-try-parse (grammar text &optional debug)
   (with-current-buffer (get-buffer-create "*jezt*")
     (delete-region (point-min) (point-max))
     (save-excursion
@@ -118,7 +118,7 @@ no such node exists in PARSER."
       (when debug
         (setf debug-buf (get-buffer-create "*jezt*"))
         (select-window (get-buffer-window "*jezt*" 'visible)))
-      
+
       (while (progn
                (when debug
                  (setf point (point))

@@ -16,7 +16,7 @@
     `(prog1 ,get ,(funcall set `(1+ ,get)))))
 
 (eval-and-compile
-  (defun* gopt-abstract-eval (form &optional default env)
+  (cl-defun gopt-abstract-eval (form &optional default env)
     "If FORM has a value known at compile time, return it.  Otherwise,
 return DEFAULT."
     (unless (eq env t)
@@ -32,16 +32,16 @@ return DEFAULT."
           (t default))))
 
 (eval-and-compile
-  (defun* gopt-get-slot-info (type slot)
+  (cl-defun gopt-get-slot-info (type slot)
     "For struct TYPE, return (IDX . INFO) for SLOT."
     (loop
-     for (slot-name . opts) in (get type 'cl-struct-slots)
-     for idx upfrom 0
-     when (eq slot-name slot)
-     return (list* idx slot-name opts)
-     finally return nil)))
+       for (slot-name . opts) in (get type 'cl-struct-slots)
+       for idx upfrom 0
+       when (eq slot-name slot)
+       return (list* idx slot-name opts)
+       finally return nil)))
 
-(defun* gopt-slot-value (type inst slot)
+(cl-defun gopt-slot-value (type inst slot)
   "Return the value of SLOT in struct INST of TYPE."
   (let* ((struct-type (get type 'cl-struct-type))
          (slot-info (gopt-get-slot-info type slot)))
@@ -54,7 +54,7 @@ return DEFAULT."
       (vector (aref inst (car slot-info)))
       (list (nth (car slot-info) inst)))))
 
-(defun* gopt-set-slot-value (type inst slot value)
+(cl-defun gopt-set-slot-value (type inst slot value)
   "Set the value of SLOT in struct INST of TYPE to VALUE."
   (let* ((struct-type (get type 'cl-struct-type))
          (slot-info (gopt-get-slot-info type slot)))
@@ -94,15 +94,15 @@ return DEFAULT."
 
 (defmacro* gopt-with-slots (spec-list (type inst) &body body)
   "Like WITH-SLOTS, but for structs."
-  (if (macroexp-copyable-p inst)
-      `(symbol-macrolet
-           ,(loop for spec in spec-list
-                  collect `(,spec (gopt-slot-value ',type ,inst ',spec)))
-         ,@body)
-    (let ((inst-symbol (cl-gensym "with-struct-slots")))
-      `(let ((,inst-symbol ,inst))
-         (gopt-with-slots
-             ,spec-list (,type ,inst-symbol) ,@body)))))
+                                                                                                         (if (macroexp-copyable-p inst)
+                                                                                                             `(symbol-macrolet
+                                                                                                                  ,(loop for spec in spec-list
+                                                                                                                      collect `(,spec (gopt-slot-value ',type ,inst ',spec)))
+                                                                                                                ,@body)
+                                                                                                           (let ((inst-symbol (cl-gensym "with-struct-slots")))
+                                                                                                             `(let ((,inst-symbol ,inst))
+                                                                                                                (gopt-with-slots
+                                                                                                                 ,spec-list (,type ,inst-symbol) ,@body)))))
 
 (put 'gopt-with-slots 'lisp-indent-function 2)
 
@@ -114,16 +114,16 @@ names.  If FORM matches a given type, we bind all slots as if
 with `gopt-with-slots', then evaluate BODY.  Instead of a list of
 type and slots, the first element of a spec may be `t', which
 operates as a catch-all."
-  (let ((formsym (cl-gensym "slotcase")))
-    `(let ((,formsym ,form))
-       (cond
-        ,@(loop for (test . body) in specs
-                collect (if (eq test t) `(t ,@body)
-                          (let ((type (car test))
-                                (slots (cdr test)))
-                            `((,(intern (format "%s-p" type)) ,formsym)
-                              (gopt-with-slots ,slots (,type ,formsym)
-                                               ,@body)))))))))
+                                                                                                                      (let ((formsym (cl-gensym "slotcase")))
+                                                                                                                        `(let ((,formsym ,form))
+                                                                                                                           (cond
+                                                                                                                             ,@(loop for (test . body) in specs
+                                                                                                                                  collect (if (eq test t) `(t ,@body)
+                                                                                                                                            (let ((type (car test))
+                                                                                                                                                  (slots (cdr test)))
+                                                                                                                                              `((,(intern (format "%s-p" type)) ,formsym)
+                                                                                                                                                (gopt-with-slots ,slots (,type ,formsym)
+                                                                                                                                                                 ,@body)))))))))
 (put 'gopt-slotcase 'lisp-indent-function 1)
 
 (defun gopt-trace (format-string &rest arguments)
@@ -160,7 +160,7 @@ operates as a catch-all."
 ;; variable, followed by either a branch or a direct jump.
 
 (defstruct (gopt-binding
-            (:constructor gopt-%make-binding))
+             (:constructor gopt-%make-binding))
   (var nil :type (or null gopt-var-name)))
 (defstruct (gopt-function)
   (name nil :type gopt-func-name)
@@ -182,12 +182,12 @@ operates as a catch-all."
   (yes nil :type gopt-instruction)
   (no nil :type gopt-instruction))
 (defstruct (gopt-goto
-            (:include gopt-next)
-            (:constructor make-gopt-goto (where)))
+             (:include gopt-next)
+             (:constructor make-gopt-goto (where)))
   (where nil :type gopt-block))
 (defstruct (gopt-goto-backward
-            (:include gopt-goto)
-            (:constructor make-gopt-goto-backward (where))))
+             (:include gopt-goto)
+             (:constructor make-gopt-goto-backward (where))))
 (defstruct (gopt-unreachable (:include gopt-next)))
 (defstruct (gopt-op) "One operation in a basic block.")
 (defstruct (gopt-op-mutator (:include gopt-op))
@@ -318,25 +318,25 @@ return it.  Otherwise, symbol is dynamic; return t."
              (value-form (cdr item)))
         (pop new-lexenv)
         (setq cur
-             (if (symbolp bo)
-                 (let ((tmp (gopt-make-binding func :lextmp)))
-                   (gopt-transform-1
-                    value-form
-                    func
-                    tmp
-                    (if (eq op 'let) lexenv new-lexenv)
-                    (make-gopt-goto
-                     (make-gopt-block
-                      :ops (list (make-gopt-op-varbind
-                                  :symbol bo
-                                  :value tmp))
-                      :next (make-gopt-goto cur)))))
-               (gopt-transform-1
-                value-form
-                func
-                bo
-                (if (eq op 'let) lexenv new-lexenv)
-                (make-gopt-goto cur))))))
+              (if (symbolp bo)
+                  (let ((tmp (gopt-make-binding func :lextmp)))
+                    (gopt-transform-1
+                     value-form
+                     func
+                     tmp
+                     (if (eq op 'let) lexenv new-lexenv)
+                     (make-gopt-goto
+                      (make-gopt-block
+                       :ops (list (make-gopt-op-varbind
+                                   :symbol bo
+                                   :value tmp))
+                       :next (make-gopt-goto cur)))))
+                (gopt-transform-1
+                 value-form
+                 func
+                 bo
+                 (if (eq op 'let) lexenv new-lexenv)
+                 (make-gopt-goto cur))))))
     ;; The result is either a direct function call or something that
     ;; will set a binding.
     cur))
@@ -376,107 +376,107 @@ containing lexical environments."
            (`(or) nil)
            (`(,(or `and `or) ,val1) val1)
            (`(and ,val . ,rest)
-            `(if ,val (and ,@rest)))
+             `(if ,val (and ,@rest)))
            (`(or ,val . ,rest)
-            (let ((orsym (cl-gensym "gopt-or-")))
-              `(let ((,orsym ,val))
-                 (if ,orsym ,orsym (or ,@rest)))))
+             (let ((orsym (cl-gensym "gopt-or-")))
+               `(let ((,orsym ,val))
+                  (if ,orsym ,orsym (or ,@rest)))))
            ;; Simplify catch
            (`(catch ,_tag . ,_bodyforms)
-            (error "XXX support catch"))
+             (error "XXX support catch"))
            ;; We automatically place `let' bindings during
            ;; optimization.  At this stage, `let' bindings only matter
            ;; for renaming variable references.
            (`(,(and (or `let* `let) op) ,bindings . ,body)
-            (gopt-transform-1-let
-             op bindings (macroexp-progn body) func var lexenv next))
+             (gopt-transform-1-let
+              op bindings (macroexp-progn body) func var lexenv next))
            ;; Decompose `cond's into `if's.
            (`(cond) nil)
            (`(cond nil) nil)
            (`(cond (,pred) . ,rest) `(or ,pred  (cond ,@rest)))
            (`(cond (,pred . ,prest) . ,rest)
-            `(if ,pred  ,(macroexp-progn prest)
-               (cond ,@rest)))
+             `(if ,pred  ,(macroexp-progn prest)
+                (cond ,@rest)))
            ;; Break up multi-variable `setq's.
            (`(setq) nil)
            (`(setq ,var) `(setq ,var nil))
            (`(setq ,(and (pred symbolp) var) ,value)
-            (let ((binding (gopt-find-binding func lexenv var)))
-              (if (eq binding t)
-                  `(set ',var ,value)
-                (gopt-transform-1 value func
-                              (gopt-find-binding func lexenv var)
-                              lexenv
-                              next))))
+             (let ((binding (gopt-find-binding func lexenv var)))
+               (if (eq binding t)
+                   `(set ',var ,value)
+                 (gopt-transform-1 value func
+                                   (gopt-find-binding func lexenv var)
+                                   lexenv
+                                   next))))
            (`(setq ,var ,value . ,rest)
-            `(progn
-               (setq ,var ,value)
-               (setq ,@rest)))
+             `(progn
+                (setq ,var ,value)
+                (setq ,@rest)))
            ;; `if'.
            (`(if ,pred ,yes . ,nos)
-            (let ((condvar (gopt-make-binding func :condvar)))
-              (gopt-transform-1
-               pred func condvar lexenv
-               (make-gopt-if
-                :condvar condvar
-                :yes (gopt-transform-1
-                      yes func var lexenv next)
-                :no (gopt-transform-1
-                     (macroexp-progn nos)
-                     func var lexenv
-                     (copy-gopt-next next))))))
+             (let ((condvar (gopt-make-binding func :condvar)))
+               (gopt-transform-1
+                pred func condvar lexenv
+                (make-gopt-if
+                 :condvar condvar
+                 :yes (gopt-transform-1
+                       yes func var lexenv next)
+                 :no (gopt-transform-1
+                      (macroexp-progn nos)
+                      func var lexenv
+                      (copy-gopt-next next))))))
            ;; Share structure after `quote'
            (`(quote ,value)
-            (make-gopt-block
-             :ops (list (make-gopt-op-constant :store var :value value))
-             :next next))
+             (make-gopt-block
+              :ops (list (make-gopt-op-constant :store var :value value))
+              :next next))
            ;; Munge `condition-case'.
            (`(condition-case ,_var ,_body . ,_handlers)
-            (error "XXX support condition-case"))
+             (error "XXX support condition-case"))
            ;; Convert `prog2' to `prog1'
            (`(prog2 ,a ,b . ,rest)
-            `(prog1 (progn ,a ,b) ,@rest))
+             `(prog1 (progn ,a ,b) ,@rest))
            ;; Implement `prog1' with a `let'-binding
            (`(prog1 ,a . ,rest)
-            (let ((prog1sym (cl-gensym "gopt-prog1-")))
-              `(let ((,prog1sym ,a))
-                 ,@rest
-                 ,prog1sym)))
+             (let ((prog1sym (cl-gensym "gopt-prog1-")))
+               `(let ((,prog1sym ,a))
+                  ,@rest
+                  ,prog1sym)))
            ;; Transform `progn' and similar.
            (`(,(pred gopt-prognlike-p)) nil)
            (`(progn ,body1) body1)
            (`(progn ,body1 .,rest)
-            (gopt-transform-1
-             body1 func
-             nil ; Evaluate for effect
-             lexenv
-             (gopt-make-goto
-              (gopt-transform-1
-               (macroexp-progn rest)
-               func var lexenv next))))
+             (gopt-transform-1
+              body1 func
+              nil ; Evaluate for effect
+              lexenv
+              (gopt-make-goto
+               (gopt-transform-1
+                (macroexp-progn rest)
+                func var lexenv next))))
            ;; Normalize `while'
            (`(while ,cond . ,body)
-            (let* ((condvar (gopt-make-binding func :loopvar))
-                   (loop-recur (make-gopt-block))
-                   (lb (gopt-transform-1
-                        cond func condvar lexenv
-                        (make-gopt-if
-                         :condvar condvar
-                         :yes (gopt-transform-1
-                               (macroexp-progn body)
-                               func
-                               nil      ; Evaluate body for effect
-                               lexenv
-                               (make-gopt-goto loop-recur))
-                         :no (gopt-transform-1 nil func var lexenv next)))))
-              (setf (gopt-block-next loop-recur) (make-gopt-goto-backward lb))
-              lb))
+             (let* ((condvar (gopt-make-binding func :loopvar))
+                    (loop-recur (make-gopt-block))
+                    (lb (gopt-transform-1
+                         cond func condvar lexenv
+                         (make-gopt-if
+                          :condvar condvar
+                          :yes (gopt-transform-1
+                                (macroexp-progn body)
+                                func
+                                nil      ; Evaluate body for effect
+                                lexenv
+                                (make-gopt-goto loop-recur))
+                          :no (gopt-transform-1 nil func var lexenv next)))))
+               (setf (gopt-block-next loop-recur) (make-gopt-goto-backward lb))
+               lb))
            ;; `unwind-protect'
            (`(unwind-protect ,_bodyform . ,_unwindforms)
-            (error "XXX support unwind-protect"))
+             (error "XXX support unwind-protect"))
            ;; Any remaining application of a special form is an error
            (`(,(pred special-form-p) . ,_)
-            (error "unrecognized special form: %S" form))
+             (error "unrecognized special form: %S" form))
            ;; Normal function application.
            ((and `(,head . ,tail) (guard (symbolp head)))
             (gopt-transform-1-funcall
@@ -499,25 +499,25 @@ function is not yet optimized."
     (gopt-with-slots (initial-lexenv
                       return-block
                       first-block)
-        (gopt-function func)
-      (setf return-variable (gopt-make-binding func :return))
-      (setf return-block (make-gopt-block
-                          :ops (list (make-gopt-op-return
-                                      :value return-variable))
-                          :next (make-gopt-unreachable)))
-      (setf initial-lexenv
-            (loop for arg in arglist
-                  if (not (memq arg '(&optional &rest)))
-                  collect (cons arg (gopt-make-binding func arg))))
-      (setf first-block
-            (gopt-transform-1 body
-                              func
-                              return-variable
-                              initial-lexenv
-                              (make-gopt-goto return-block)))
-      (gopt-update-predecessors func)
-      (gopt-merge-basic-blocks func)
-      func)))
+                     (gopt-function func)
+                     (setf return-variable (gopt-make-binding func :return))
+                     (setf return-block (make-gopt-block
+                                         :ops (list (make-gopt-op-return
+                                                     :value return-variable))
+                                         :next (make-gopt-unreachable)))
+                     (setf initial-lexenv
+                           (loop for arg in arglist
+                              if (not (memq arg '(&optional &rest)))
+                              collect (cons arg (gopt-make-binding func arg))))
+                     (setf first-block
+                           (gopt-transform-1 body
+                                             func
+                                             return-variable
+                                             initial-lexenv
+                                             (make-gopt-goto return-block)))
+                     (gopt-update-predecessors func)
+                     (gopt-merge-basic-blocks func)
+                     func)))
 
 (defun gopt-map-reachable-blocks (func enumerator)
   "Call ENUMERATOR for each block reachable in FUNC.
@@ -528,21 +528,21 @@ may be visited more than once."
       (let ((block (pop worklist)))
         (funcall enumerator block)
         (gopt-slotcase (gopt-block-next block)
-          ((gopt-goto-backward) nil)
-          ((gopt-unreachable) nil)
-          ((gopt-goto where) (push where worklist))
-          ((gopt-if yes no)
-           (push yes worklist)
-           (push no worklist))
-          (t (error "unknown edge type: %S" (gopt-block-next block))))))))
+                       ((gopt-goto-backward) nil)
+                       ((gopt-unreachable) nil)
+                       ((gopt-goto where) (push where worklist))
+                       ((gopt-if yes no)
+                        (push yes worklist)
+                        (push no worklist))
+                       (t (error "unknown edge type: %S" (gopt-block-next block))))))))
 (put 'gopt-map-reachable-blocks 'lisp-indent-function 1)
 
 (defun gopt-map-successors (block func)
   (gopt-slotcase (gopt-block-next block)
-    ((gopt-goto where) (funcall func where))
-    ((gopt-if yes no) (funcall func yes) (funcall func no))
-    ((gopt-unreachable) nil)
-    (t (error "unknown edge: %S" (gopt-block-next block)))))
+                 ((gopt-goto where) (funcall func where))
+                 ((gopt-if yes no) (funcall func yes) (funcall func no))
+                 ((gopt-unreachable) nil)
+                 (t (error "unknown edge: %S" (gopt-block-next block)))))
 
 (defun gopt-map-edges (func enumerator)
   "Call ENUMERATOR for each reachable CFG edge in FUNC.
@@ -550,21 +550,21 @@ ENUMERATOR is called with two arguments, the predecessor
 and the successor.  This routine does not depend on predecessor
 information being up-to-date."
   (gopt-map-reachable-blocks func
-    (lambda (block)
-      (gopt-map-successors block
-        (lambda (next)
-          (funcall enumerator block next))))))
+                             (lambda (block)
+                               (gopt-map-successors block
+                                                    (lambda (next)
+                                                      (funcall enumerator block next))))))
 (put 'gopt-map-edges 'lisp-indent-function 1)
 
 (defun gopt-update-predecessors (func)
   "Update basic block predecessor information in FUNC."
   (gopt-map-reachable-blocks func
-    (lambda (block)
-      (check-type block gopt-block)
-      (setf (gopt-block-predecessors block) nil)))
+                             (lambda (block)
+                               (check-type block gopt-block)
+                               (setf (gopt-block-predecessors block) nil)))
   (gopt-map-edges func
-    (lambda (from to)
-      (pushnew from (gopt-block-predecessors to)))))
+                  (lambda (from to)
+                    (pushnew from (gopt-block-predecessors to)))))
 
 (defun gopt-block-merge-get-safe-successor (block)
   "Check if safe to merge BLOCK into its successor.
@@ -581,8 +581,8 @@ If unsafe, return `nil'.  Otherwise, return the successor."
 (defun gopt-fix-predecessors (block old new)
   "In BLOCK, replace OLD with NEW in predecessor list."
   (loop for cell on (gopt-block-predecessors block)
-        when (eq (car cell) old)
-        do (setcar cell new)))
+     when (eq (car cell) old)
+     do (setcar cell new)))
 
 (put 'gopt-map-successors 'lisp-indent-function 1)
 
@@ -607,8 +607,8 @@ If unsafe, return `nil'.  Otherwise, return the successor."
       (setf (gopt-block-next block)
             (gopt-block-next cur))
       (gopt-map-successors block
-        (lambda (successor)
-          (gopt-fix-predecessors successor cur block))))))
+                           (lambda (successor)
+                             (gopt-fix-predecessors successor cur block))))))
 
 (defun gopt-merge-basic-blocks (func)
   "Combine mergeable basic blocks in FUNC.
@@ -617,20 +617,20 @@ Predecessor information must be up-to-date."
 
 (defun gopt-map-set-bindings (func enumerator)
   (gopt-map-reachable-blocks func
-    (lambda (block)
-      (dolist (op (gopt-block-ops block))
-        (gopt-slotcase op
-          ((gopt-op-mutator store) (funcall enumerator store))
-          ((gopt-op) nil))))))
+                             (lambda (block)
+                               (dolist (op (gopt-block-ops block))
+                                 (gopt-slotcase op
+                                                ((gopt-op-mutator store) (funcall enumerator store))
+                                                ((gopt-op) nil))))))
 (put 'gopt-map-set-bindings 'lisp-indent-function 1)
 (defun gopt-compute-liveness (func)
   "Compute live-variable information."
   (let ((binding->nr (make-hash-table :test 'eq)))
     (gopt-map-set-bindings func
-      (lambda (binding)
-        (or (gethash binding binding->nr)
-            (puthash binding (hash-table-count binding->nr)
-                     binding->nr))))
+                           (lambda (binding)
+                             (or (gethash binding binding->nr)
+                                 (puthash binding (hash-table-count binding->nr)
+                                          binding->nr))))
     binding->nr))
 
 (defun gopt-emit (string &rest objects)
@@ -691,11 +691,11 @@ or the string \"MANY\" if ARGLIST accepts unlimited arguments."
           (when (gethash name name->obj)
             (setq name
                   (loop for suffix-nr upfrom (1+ (gopt-c-vardb-suffix vardb))
-                        for sname = (format "%s%d" name suffix-nr)
-                        while (gethash sname name->obj)
-                        finally return (progn
-                                         (setf (gopt-c-vardb-suffix vardb) suffix-nr)
-                                         sname))))
+                     for sname = (format "%s%d" name suffix-nr)
+                     while (gethash sname name->obj)
+                     finally return (progn
+                                      (setf (gopt-c-vardb-suffix vardb) suffix-nr)
+                                      sname))))
           (puthash name obj name->obj)
           (puthash obj name obj->name)))))
 
@@ -768,11 +768,11 @@ Omits the opening and closing double-quotes."
     ((pred integerp)
      (gopt-emit "make_number (%d)" value))
     (`(,head . ,tail)
-     (gopt-emit "Fcons (")
-     (gopt-c-emit-constant head)
-     (gopt-emit ", ")
-     (gopt-c-emit-constant tail)
-     (gopt-emit ")"))
+      (gopt-emit "Fcons (")
+      (gopt-c-emit-constant head)
+      (gopt-emit ", ")
+      (gopt-c-emit-constant tail)
+      (gopt-emit ")"))
     ((pred symbolp)
      (gopt-emit
       "%s"
@@ -782,26 +782,26 @@ Omits the opening and closing double-quotes."
 (defun gopt-c-emit-op (op)
   (gopt-emit "  ")
   (gopt-slotcase op
-    ((gopt-op-funcall store name arguments)
-     (when store
-       (gopt-emit "%s = " (gopt-c-get-binding-name store t)))
-     (gopt-c-emit-funcall-expr name arguments))
-    ((gopt-op-var-copy store from-where)
-     (when store
-       (gopt-emit "%s =" (gopt-c-get-binding-name store t)))
-     (gopt-emit "%s" (gopt-c-get-binding-name from-where)))
-    ((gopt-op-constant store value)
-     (gopt-emit "%s = " (gopt-c-get-binding-name store t))
-     (gopt-c-emit-constant value))
-    ((gopt-op-unbind howmuch)
-     (gopt-emit "unbind_to (SPECPDL_INDEX () - %d, Qnil)" howmuch))
-    ((gopt-op-return value)
-     (gopt-emit "return %s" (gopt-c-get-binding-name value)))
-    ((gopt-op-varbind symbol value)
-     (gopt-emit "specbind (%s, %s)"
-                (gopt-c-get-symbol-name symbol)
-                (gopt-c-get-binding-name value)))
-    (t (error "unknown op: %S" op)))
+                 ((gopt-op-funcall store name arguments)
+                  (when store
+                    (gopt-emit "%s = " (gopt-c-get-binding-name store t)))
+                  (gopt-c-emit-funcall-expr name arguments))
+                 ((gopt-op-var-copy store from-where)
+                  (when store
+                    (gopt-emit "%s =" (gopt-c-get-binding-name store t)))
+                  (gopt-emit "%s" (gopt-c-get-binding-name from-where)))
+                 ((gopt-op-constant store value)
+                  (gopt-emit "%s = " (gopt-c-get-binding-name store t))
+                  (gopt-c-emit-constant value))
+                 ((gopt-op-unbind howmuch)
+                  (gopt-emit "unbind_to (SPECPDL_INDEX () - %d, Qnil)" howmuch))
+                 ((gopt-op-return value)
+                  (gopt-emit "return %s" (gopt-c-get-binding-name value)))
+                 ((gopt-op-varbind symbol value)
+                  (gopt-emit "specbind (%s, %s)"
+                             (gopt-c-get-symbol-name symbol)
+                             (gopt-c-get-binding-name value)))
+                 (t (error "unknown op: %S" op)))
   (gopt-emit ";\n"))
 
 (defun gopt-c-get-block-label (block)
@@ -811,51 +811,51 @@ Omits the opening and closing double-quotes."
   (gopt-emit "  %s:\n" (gopt-c-get-block-label block))
   (mapc #'gopt-c-emit-op (gopt-block-ops block))
   (gopt-slotcase (gopt-block-next block)
-    ((gopt-goto where) (gopt-emit
-                        "  goto %s;\n"
-                        (gopt-c-get-block-label where)))
-    ((gopt-if condvar yes no)
-     (gopt-emit "  if (NILP (%s))\n    goto %s;\n  else\n    goto %s;\n"
-                (gopt-c-get-binding-name condvar)
-                (gopt-c-get-block-label yes)
-                (gopt-c-get-block-label no)))
-    ((gopt-unreachable))
-    (t (error "invalid block next: %S")
-       (gopt-block-next block)))
+                 ((gopt-goto where) (gopt-emit
+                                     "  goto %s;\n"
+                                     (gopt-c-get-block-label where)))
+                 ((gopt-if condvar yes no)
+                  (gopt-emit "  if (NILP (%s))\n    goto %s;\n  else\n    goto %s;\n"
+                             (gopt-c-get-binding-name condvar)
+                             (gopt-c-get-block-label yes)
+                             (gopt-c-get-block-label no)))
+                 ((gopt-unreachable))
+                 (t (error "invalid block next: %S")
+                    (gopt-block-next block)))
   (gopt-emit "\n"))
 
 (defun gopt-ir-to-c-1 (func)
   (gopt-with-slots
-      (name arglist first-block initial-lexenv)
-      (gopt-function func)
-    ;; Write function header.
-    (let ((arginfo (gopt-arglist-bounds arglist))
-          (idname (replace-regexp-in-string "-" "_" (symbol-name name) t t)))
-      (gopt-emit "DEFUN (\"%s\", F%s, S%s, %s, %s, 0, doc: /**/)\n"
-                 name idname idname (car arginfo) (cdr arginfo)))
-    ;; Write arglist and opening brace.
-    (let ((gopt-c-vardb (make-gopt-c-vardb))
-          (seen-blocks (make-hash-table :test 'eq)))
-      (gopt-emit "  (")
-      (dolist (item initial-lexenv)
-        (let ((name (car item)) (binding (cdr item)))
-          (gopt-emit
-           "%sLisp_Object %s"
-           (if (eq item (car initial-lexenv)) "" ", ")
-           (gopt-c-intern gopt-c-vardb binding name))))
-      (gopt-emit ")\n")
-      (gopt-emit "{\n")
-      (gopt-emit "\n")
-      (let ((gopt-c-decl-spot (save-excursion (backward-char)
-                                              (point-marker))))
-        (set-marker-insertion-type gopt-c-decl-spot t)
-        (gopt-map-reachable-blocks func
-          (lambda (block)
-            (unless (gethash block seen-blocks)
-              (puthash block t seen-blocks)
-              (gopt-c-emit-block block)))))
-      (gopt-emit "}\n")
-      nil)))
+   (name arglist first-block initial-lexenv)
+   (gopt-function func)
+   ;; Write function header.
+   (let ((arginfo (gopt-arglist-bounds arglist))
+         (idname (replace-regexp-in-string "-" "_" (symbol-name name) t t)))
+     (gopt-emit "DEFUN (\"%s\", F%s, S%s, %s, %s, 0, doc: /**/)\n"
+                name idname idname (car arginfo) (cdr arginfo)))
+   ;; Write arglist and opening brace.
+   (let ((gopt-c-vardb (make-gopt-c-vardb))
+         (seen-blocks (make-hash-table :test 'eq)))
+     (gopt-emit "  (")
+     (dolist (item initial-lexenv)
+       (let ((name (car item)) (binding (cdr item)))
+         (gopt-emit
+          "%sLisp_Object %s"
+          (if (eq item (car initial-lexenv)) "" ", ")
+          (gopt-c-intern gopt-c-vardb binding name))))
+     (gopt-emit ")\n")
+     (gopt-emit "{\n")
+     (gopt-emit "\n")
+     (let ((gopt-c-decl-spot (save-excursion (backward-char)
+                                             (point-marker))))
+       (set-marker-insertion-type gopt-c-decl-spot t)
+       (gopt-map-reachable-blocks func
+                                  (lambda (block)
+                                    (unless (gethash block seen-blocks)
+                                      (puthash block t seen-blocks)
+                                      (gopt-c-emit-block block)))))
+     (gopt-emit "}\n")
+     nil)))
 
 (defun gopt-ir-to-c (func out)
   "Write a C translation of FUNC to OUT.
@@ -918,12 +918,12 @@ operand's argument, the type of which depends on OP."
 (defun gopt-lap-stack-offset (target-binding &optional no-error)
   "Find the offset on the current stack for binding."
   (loop for binding in gopt-lap-stack-map
-        for offset upfrom 0
-        if (eq binding target-binding)
-        return offset
-        finally return
-        (if no-error nil
-          (error "no stack entry for %S" target-binding))))
+     for offset upfrom 0
+     if (eq binding target-binding)
+     return offset
+     finally return
+       (if no-error nil
+         (error "no stack entry for %S" target-binding))))
 
 (defun gopt-lap-note-push (item)
   "Remember that we stored an item on the stack."
@@ -940,8 +940,8 @@ Does NOT emit stack discard operations --- use this function to reflect
 emissions of instructions that discard stack on their own."
   (setf n (or n 1))
   (loop for item in gopt-lap-stack-map
-        for i below n
-        do (gopt-lap-trace " - @%d %S" (- (length gopt-lap-stack-map) i 1) item))
+     for i below n
+     do (gopt-lap-trace " - @%d %S" (- (length gopt-lap-stack-map) i 1) item))
   (setf gopt-lap-stack-map (nthcdr n gopt-lap-stack-map))
   (decf gopt-lap-stack-depth n))
 
@@ -963,11 +963,11 @@ Also update the stack map to indicate that we've done so."
 (defun gopt-list-prefix-p (prefix list)
   "Check whether PREFIX is a prefix of LIST."
   (loop while prefix
-        for i-prefix = (pop prefix)
-        for i-list = (pop list)
-        if (not (eq i-prefix i-list))
-        return nil
-        finally return t))
+     for i-prefix = (pop prefix)
+     for i-list = (pop list)
+     if (not (eq i-prefix i-list))
+     return nil
+     finally return t))
 
 (defun gopt-lap-emit-funcall (store name arguments)
   (check-type store (or null gopt-binding))
@@ -991,27 +991,27 @@ Also update the stack map to indicate that we've done so."
 (defun gopt-lap-emit-op (op)
   "Emit an IR operation as zero or more LAP operations."
   (gopt-slotcase op
-    ((gopt-op-funcall store name arguments)
-     (gopt-lap-emit-funcall store name arguments))
-    ((gopt-op-var-copy store from-where)
-     (if store
-         (gopt-lap-emit-var-ref from-where store)
-       (gopt-lap-emit-var-ref from-where)
-       (gopt-lap-emit 'byte-discard nil)
-       (gopt-lap-note-pop)))
-    ((gopt-op-constant store value)
-     (gopt-lap-emit 'byte-constant (gopt-lap-intern-constant value))
-     (gopt-lap-note-push store))
-    ((gopt-op-unbind howmuch)
-     (gopt-lap-emit 'byte-unbind howmuch))
-    ((gopt-op-return value)
-     (gopt-lap-emit-var-ref value)
-     (gopt-lap-emit 'byte-return nil))
-    ((gopt-op-varbind symbol value)
-     (gopt-lap-emit-var-ref value)
-     (gopt-lap-emit 'byte-varbind (gopt-lap-intern-constant symbol))
-     (gopt-lap-note-pop 1))
-    (t (error "unknown op: %S" op))))
+                 ((gopt-op-funcall store name arguments)
+                  (gopt-lap-emit-funcall store name arguments))
+                 ((gopt-op-var-copy store from-where)
+                  (if store
+                      (gopt-lap-emit-var-ref from-where store)
+                    (gopt-lap-emit-var-ref from-where)
+                    (gopt-lap-emit 'byte-discard nil)
+                    (gopt-lap-note-pop)))
+                 ((gopt-op-constant store value)
+                  (gopt-lap-emit 'byte-constant (gopt-lap-intern-constant value))
+                  (gopt-lap-note-push store))
+                 ((gopt-op-unbind howmuch)
+                  (gopt-lap-emit 'byte-unbind howmuch))
+                 ((gopt-op-return value)
+                  (gopt-lap-emit-var-ref value)
+                  (gopt-lap-emit 'byte-return nil))
+                 ((gopt-op-varbind symbol value)
+                  (gopt-lap-emit-var-ref value)
+                  (gopt-lap-emit 'byte-varbind (gopt-lap-intern-constant symbol))
+                  (gopt-lap-note-pop 1))
+                 (t (error "unknown op: %S" op))))
 
 (defun gopt-lap-emit-stack-restore (old-depth)
   "Emit code to restore stack to OLD-DEPTH."
@@ -1025,7 +1025,7 @@ Also update the stack map to indicate that we've done so."
       (let (entry old-offset already-set)
         (setf entry (car gopt-lap-stack-map))
         (cond ((eq entry t) ; Not actually a binding
-                nil)
+               nil)
               ((memq entry already-set)
                ;; Already set a more recently bound value, so discard
                ;; this one.
@@ -1053,24 +1053,24 @@ Also update the stack map to indicate that we've done so."
   ;; stack, so allocate a variable for it here before main code
   ;; emission.
   (gopt-lap-trace "[begin sd:%d] block: %S"
-              (length gopt-lap-stack-map)
-              (gopt-block-ops block))
+                  (length gopt-lap-stack-map)
+                  (gopt-block-ops block))
   (gopt-lap-emit-block-tag block)
   (gopt-slotcase (gopt-block-next block)
-    ((gopt-if condvar)
-     (gopt-lap-emit-var-ref condvar)))
+                 ((gopt-if condvar)
+                  (gopt-lap-emit-var-ref condvar)))
   (let ((old-depth gopt-lap-stack-depth))
     (mapc #'gopt-lap-emit-op (gopt-block-ops block))
     (gopt-lap-emit-stack-restore old-depth))
   (gopt-slotcase (gopt-block-next block)
-    ((gopt-if yes no)
-     (gopt-lap-emit 'byte-goto-if-not-nil (gopt-lap-intern-block yes))
-     (gopt-lap-note-pop 1)
-     (gopt-lap-emit 'byte-goto (gopt-lap-intern-block no)))
-    ((gopt-unreachable))
-    ((gopt-goto where)
-     (gopt-lap-emit 'byte-goto (gopt-lap-intern-block where)))
-    (t (error "unknown edge: %S" (gopt-block-next block))))
+                 ((gopt-if yes no)
+                  (gopt-lap-emit 'byte-goto-if-not-nil (gopt-lap-intern-block yes))
+                  (gopt-lap-note-pop 1)
+                  (gopt-lap-emit 'byte-goto (gopt-lap-intern-block no)))
+                 ((gopt-unreachable))
+                 ((gopt-goto where)
+                  (gopt-lap-emit 'byte-goto (gopt-lap-intern-block where)))
+                 (t (error "unknown edge: %S" (gopt-block-next block))))
   (gopt-lap-trace "[end sd:%d]" (length gopt-lap-stack-map)))
 
 (defun gopt-ir-to-byte-code (func &optional no-opt)
@@ -1086,24 +1086,24 @@ Also update the stack map to indicate that we've done so."
       ;; These are arguments and come pre-pushed.  Just update the
       ;; stack map directly.
       (loop for item in (gopt-function-initial-lexenv func)
-            for binding = (cdr item)
-            do (progn
-                 (push binding already-pushed)
-                 (gopt-lap-note-push binding)))
+         for binding = (cdr item)
+         do (progn
+              (push binding already-pushed)
+              (gopt-lap-note-push binding)))
       ;; Push actual constants for remaining bindings.
       (loop for binding in (gopt-function-bindings func)
-            unless (memq binding already-pushed)
-            do (progn
-                 (gopt-lap-emit 'byte-constant
-                                (gopt-lap-intern-constant nil))
-                 (gopt-lap-note-push binding))))
+         unless (memq binding already-pushed)
+         do (progn
+              (gopt-lap-emit 'byte-constant
+                             (gopt-lap-intern-constant nil))
+              (gopt-lap-note-push binding))))
     ;; Emit basic blocks.
     (let ((seen (make-hash-table :test 'eq)))
       (gopt-map-reachable-blocks func
-        (lambda (block)
-          (unless (gethash block seen)
-            (puthash block t seen)
-            (gopt-lap-emit-block block)))))
+                                 (lambda (block)
+                                   (unless (gethash block seen)
+                                     (puthash block t seen)
+                                     (gopt-lap-emit-block block)))))
     ;; Compiled --- now assemble.  N.B. Create cvec before calling
     ;; `byte-compile-lapcode' --- creating cvec updates our lapcode by
     ;; side effect.
@@ -1112,9 +1112,9 @@ Also update the stack map to indicate that we've done so."
     ;;   (setf gopt-lap (byte-optimize-lapcode gopt-lap)))
     (let ((cvec (apply #'vector
                        (loop for const-cell in gopt-lap-constants
-                             for i upfrom 0
-                             do (setcdr const-cell i)
-                             and collect (car const-cell)))))
+                          for i upfrom 0
+                          do (setcdr const-cell i)
+                          and collect (car const-cell)))))
       (make-byte-code
        (let ((arglist (gopt-function-arglist func)))
          (if lexical-binding (byte-compile-make-args-desc arglist) arglist))

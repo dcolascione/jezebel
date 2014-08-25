@@ -4,7 +4,7 @@
 (require 'jezebel-util)
 
 (eval-and-compile
-  (defmacro* jezt-functional-struct-test (&rest forms)
+  (cl-defmacro jezt-functional-struct-test (&rest forms)
     "Test a jetz functional struct. Runs FORMS repeatedly,
 once for each variety of functional structure.
 

@@ -1,9 +1,5 @@
 ;; -*- lexical-binding: t -*-
 
-(eval-when-compile
-  (require 'macroexp)
-  (require 'cl))
-
 (require 'cl-lib)
 
 ;; (declare (optimize (speed 3) (safety 0)))
@@ -11,7 +7,7 @@
 
 ;;;; Misc.
 
-(defmacro* jez-the (&environment env type form)
+(cl-defmacro jez-the (&environment env type form)
   "Like `the', except that we assert that FORM is a TYPE."
   (setf form (cl-macroexpand-all form env))
   (list 'the
@@ -29,20 +25,20 @@
   "A type representing a Lisp list of ITEM-TYPE."
   `(satisfies (lambda (list)
                 (loop for val in list
-                      always (typep val ',item-type)))))
+                   always (typep val ',item-type)))))
 
 (defun jez-delete-function (fun)
   (interactive "aFunction to delete: ")
   (fmakunbound fun))
 
-(defun* jez--update-hash (dest src)
+(cl-defun jez--update-hash (dest src)
   "Copy all entries in hash SRC into DEST."
   (maphash (lambda (key value)
              (puthash key value dest))
            src))
 
 (eval-and-compile
-  (defun* jez--abstract-eval (form &optional default env)
+  (cl-defun jez--abstract-eval (form &optional default env)
     "If FORM has a value known at compile time, return it.  Otherwise,
 return DEFAULT."
     (setf form (cl-macroexpand-all form env))
@@ -61,16 +57,16 @@ return DEFAULT."
 ;;; if a struct STRUCT has a type predicate STRUCT-P, which is the
 ;;; default.
 
-(defun* jez--get-slot-info (type slot)
+(cl-defun jez--get-slot-info (type slot)
   "For struct TYPE, return (IDX . INFO) for SLOT."
   (loop
-   for (slot-name . opts) in (get type 'cl-struct-slots)
-   for idx upfrom 0
-   when (eq slot-name slot)
-   return (list* idx slot-name opts)
-   finally return nil))
+     for (slot-name . opts) in (get type 'cl-struct-slots)
+     for idx upfrom 0
+     when (eq slot-name slot)
+     return (list* idx slot-name opts)
+     finally return nil))
 
-(defun* jez-slot-value (type inst slot)
+(cl-defun jez-slot-value (type inst slot)
   "Return the value of SLOT in struct INST of TYPE."
   (let* ((struct-type (get type 'cl-struct-type))
          (slot-info (jez--get-slot-info type slot)))
@@ -83,7 +79,7 @@ return DEFAULT."
       (vector (aref inst (car slot-info)))
       (list (nth (car slot-info) inst)))))
 
-(defun* jez-set-slot-value (type inst slot value)
+(cl-defun jez-set-slot-value (type inst slot value)
   "Set the value of SLOT in struct INST of TYPE to VALUE."
   (let* ((struct-type (get type 'cl-struct-type))
          (slot-info (jez--get-slot-info type slot)))
@@ -123,12 +119,12 @@ return DEFAULT."
             (list `(setf (nth ,idx (jez-the ,type ,inst)) ,value))))
       orig)))
 
-(defmacro* jez-with-slots (spec-list (type inst) &body body)
+(cl-defmacro jez-with-slots (spec-list (type inst) &body body)
   "Like WITH-SLOTS, but for structs."
   (if (symbolp inst)
       `(symbol-macrolet
            ,(loop for spec in spec-list
-                  collect `(,spec (jez-slot-value ',type ,inst ',spec)))
+               collect `(,spec (jez-slot-value ',type ,inst ',spec)))
          ,@body)
     (let ((inst-symbol (gensym "with-struct-slots")))
       `(let ((,inst-symbol ,inst))
@@ -137,7 +133,7 @@ return DEFAULT."
 
 (put 'jez-with-slots 'lisp-indent-function 2)
 
-(defun* jez-struct-type (value &aux tag)
+(cl-defun jez-struct-type (value &aux tag)
   "If value is a CL struct, return its struct symbol.  Otherwise,
 return nil.  Fails to detect instances of structs with an
 :initial-offset and structs that are not named."
@@ -156,7 +152,7 @@ return nil.  Fails to detect instances of structs with an
 (deftype jez-struct ()
   `(satisfies (lambda (v) (jez-struct-type v))))
 
-(defun* jez-indent-string (indent s)
+(cl-defun jez-indent-string (indent s)
   "Return a string like S, except that line begins with INDENT
   spaces.  The returned string also ends in a newline."
 
@@ -169,28 +165,28 @@ return nil.  Fails to detect instances of structs with an
         (insert "\n"))
       (buffer-substring (point-min) (point-max)))))
 
-(defmacro* with-jez-indented-output (indent &body body)
+(cl-defmacro with-jez-indented-output (indent &body body)
   `(princ
     (jez-indent-string ,indent
                        (with-output-to-string
-                         ,@body))))
+                           ,@body))))
 (put 'with-jez-indented-output 'lisp-indent-function 1)
 
 (defvar jez-describe-seen)
 
-(defun* jez-describe-1 (val)
+(cl-defun jez-describe-1 (val)
   (typecase val
     (jez-struct
      (let ((struct-type (jez-struct-type val)))
        (princ (format "#(struct %S\n" struct-type))
        (with-jez-indented-output 2
          (loop
-          for (slot . nil) in (get struct-type 'cl-struct-slots)
-          unless (eq slot 'cl-tag-slot)
-          do (princ (format "(:%S\n" slot))
-          and do (with-jez-indented-output 2
-                   (jez-describe-1 (jez-slot-value struct-type val slot)))
-          and do (princ ")\n")))
+            for (slot . nil) in (get struct-type 'cl-struct-slots)
+            unless (eq slot 'cl-tag-slot)
+            do (princ (format "(:%S\n" slot))
+            and do (with-jez-indented-output 2
+                     (jez-describe-1 (jez-slot-value struct-type val slot)))
+            and do (princ ")\n")))
        (princ ")\n")))
     (hash-table
      (princ "#(hash-table\n")
@@ -210,24 +206,24 @@ return nil.  Fails to detect instances of structs with an
        (princ "(\n")
        (with-jez-indented-output 2
          (loop for cons on val
-               when (eq (car cons) 'lambda)
-               do (progn
-                    (princ " . ")
-                    (pp cons)) and return nil
-                    do (with-jez-indented-output 0
-                         (jez-describe-1 (car cons)))))
+            when (eq (car cons) 'lambda)
+            do (progn
+                 (princ " . ")
+                 (pp cons)) and return nil
+            do (with-jez-indented-output 0
+                 (jez-describe-1 (car cons)))))
        (princ ")\n")))
     (t
      (pp val))))
 
-(defun* jez-describe (val &optional stream)
+(cl-defun jez-describe (val &optional stream)
   (let ((standard-output stream))
     (jez-describe-1 val)
     nil))
 
 ;;;; Purely functional structs.
 
-(defmacro* define-functional-struct (name &rest orig-slots)
+(cl-defmacro define-functional-struct (name &rest orig-slots)
   "`defstruct' specialized for pure functional data structures.
 A structure is defined just as `defstruct' would, except that an
 additional copy-and-modify function is defined.
@@ -314,18 +310,18 @@ generate.  The name defaults to copy-and-modify-NAME.
        (defstruct ,name ,@orig-slots)
        ,(functional-struct--inner
          name-symbol
-          (ecase struct-type
-            (list   'functional-struct--list)
-            (vector 'functional-struct--vector)
-            (nil    'ignore))
-          copymod-name
-          slots)
+         (ecase struct-type
+           (list   'functional-struct--list)
+           (vector 'functional-struct--vector)
+           (nil    'ignore))
+         copymod-name
+         slots)
        ',name-symbol)))
 
-(defun* functional-struct--inner (name-symbol inner copymod-name slots)
+(cl-defun functional-struct--inner (name-symbol inner copymod-name slots)
   (let* ((slots-supplied
           (loop for slot in slots
-                collect (intern (format "%s-supplied-p" slot))))
+             collect (intern (format "%s-supplied-p" slot))))
          (docstr (concat
                   "Copy and modify an instance of "
                   (symbol-name name-symbol)
@@ -341,23 +337,23 @@ generate.  The name defaults to copy-and-modify-NAME.
                   ")")))
     (when copymod-name
       `(progn
-         (defmacro* ,copymod-name
+         (cl-defmacro ,copymod-name
              (inst &key
-                   ,@(loop for slot in slots
-                           for supp in slots-supplied
-                           when (and slot (symbolp slot))
-                           collect (list slot nil supp)))
-             ,docstr
+                     ,@(loop for slot in slots
+                          for supp in slots-supplied
+                          when (and slot (symbolp slot))
+                          collect (list slot nil supp)))
+           ,docstr
            (let ((slot-info (list
                              ,@(loop for slot in slots
-                                     for supp in slots-supplied
-                                     collect
-                                     (append
-                                      '(list)
-                                      (if (and slot (symbolp slot))
-                                          (list (list 'quote slot)
-                                                slot supp)
-                                        (list nil nil nil)))))))
+                                  for supp in slots-supplied
+                                  collect
+                                    (append
+                                     '(list)
+                                     (if (and slot (symbolp slot))
+                                         (list (list 'quote slot)
+                                               slot supp)
+                                       (list nil nil nil)))))))
              ,(funcall inner 'inst 'slot-info)))
          (put ',copymod-name 'lisp-indent-function 1)))))
 
@@ -372,9 +368,9 @@ expansion of FORM.  Macro environment ENV is used for expansion."
     (cons
      (cl-macroexpand-all
       `(macrolet ((,hack-macro-sym
-                   ()
-                   (setf functional-struct--expand-anaphor-hack t)
-                   ',def))
+                      ()
+                    (setf functional-struct--expand-anaphor-hack t)
+                    ',def))
          (symbol-macrolet ((,anaphor (,hack-macro-sym)))
            ,form))
       env)
@@ -382,76 +378,76 @@ expansion of FORM.  Macro environment ENV is used for expansion."
 
 (defun functional-struct--vector (inst-sym slot-info-sym)
   `(loop
-    with new-sym = (gensym "copymod-new")
+      with new-sym = (gensym "copymod-new")
 
-    for idx upfrom 0
-    for (slot-name slot-value-form slot-supplied-p) in ,slot-info-sym
-    when slot-supplied-p
-    collect `(aset
-              ,new-sym
-              ,idx
-              ,(first (functional-struct--expand-anaphor
-                       'orig `(aref ,new-sym ,idx)
-                       slot-value-form
-                       cl-macro-environment)))
-    into body
+      for idx upfrom 0
+      for (slot-name slot-value-form slot-supplied-p) in ,slot-info-sym
+      when slot-supplied-p
+      collect `(aset
+                ,new-sym
+                ,idx
+                ,(first (functional-struct--expand-anaphor
+                         'orig `(aref ,new-sym ,idx)
+                         slot-value-form
+                         cl-macro-environment)))
+      into body
 
-    finally return
-    `(let ((,new-sym (copy-sequence ,,inst-sym)))
-       ,@body
-       ,new-sym)))
+      finally return
+        `(let ((,new-sym (copy-sequence ,,inst-sym)))
+           ,@body
+           ,new-sym)))
 
 (defun functional-struct--list (inst-sym slot-info-sym)
   `(loop
-    with new-sym = (gensym "copymod-new")
-    with tmp-sym = (gensym "copymod-tmp")
-    with orig-sym = (gensym "copymod-orig")
-    with need-orig-sym
+      with new-sym = (gensym "copymod-new")
+      with tmp-sym = (gensym "copymod-tmp")
+      with orig-sym = (gensym "copymod-orig")
+      with need-orig-sym
 
-    with nr-to-process = (loop for (nil nil supplied-p) in ,slot-info-sym
-                               count supplied-p)
+      with nr-to-process = (loop for (nil nil supplied-p) in ,slot-info-sym
+                              count supplied-p)
 
-    for (slot-name slot-value-form slot-supplied-p)
-    in ,slot-info-sym
+      for (slot-name slot-value-form slot-supplied-p)
+      in ,slot-info-sym
 
-    ;; Expand value form so we know whether we need to bind
-    ;; the orig form.
+      ;; Expand value form so we know whether we need to bind
+      ;; the orig form.
 
-    ;; N.B. if slot-supplied-p is nil, slot-value-form will be nil and
-    ;; this expansion will be harmless. Also, orig-used will also be
-    ;; nill in this case.
+      ;; N.B. if slot-supplied-p is nil, slot-value-form will be nil and
+      ;; this expansion will be harmless. Also, orig-used will also be
+      ;; nill in this case.
 
-    for (exp . orig-used) = (functional-struct--expand-anaphor
-                             'orig
-                             orig-sym
-                             slot-value-form
-                             cl-macro-environment)
+      for (exp . orig-used) = (functional-struct--expand-anaphor
+                               'orig
+                               orig-sym
+                               slot-value-form
+                               cl-macro-environment)
 
-    until (zerop nr-to-process)
+      until (zerop nr-to-process)
 
-    ;; Figure out how to get the body for this slot.
+      ;; Figure out how to get the body for this slot.
 
-    collect (cond (orig-used
-                   (assert slot-supplied-p)
-                   (setf need-orig-sym t)
-                   (decf nr-to-process)
-                   `(progn
-                      (setf ,orig-sym (pop ,tmp-sym))
-                      ,exp))
-                  (slot-supplied-p
-                   (decf nr-to-process)
-                   `(progn
-                      (setf ,tmp-sym (rest ,tmp-sym))
-                      ,exp))
-                  (t
-                   `(pop ,tmp-sym)))
-    into body
+      collect (cond (orig-used
+                     (assert slot-supplied-p)
+                     (setf need-orig-sym t)
+                     (decf nr-to-process)
+                     `(progn
+                        (setf ,orig-sym (pop ,tmp-sym))
+                        ,exp))
+                    (slot-supplied-p
+                     (decf nr-to-process)
+                     `(progn
+                        (setf ,tmp-sym (rest ,tmp-sym))
+                        ,exp))
+                    (t
+                     `(pop ,tmp-sym)))
+      into body
 
-    ;; And when we're done, package everything into a single form.
+      ;; And when we're done, package everything into a single form.
 
-    finally return
-    `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
-       (list* ,@body ,tmp-sym))))
+      finally return
+        `(let ((,tmp-sym ,inst) ,@(when need-orig-sym `(,orig-sym)))
+           (list* ,@body ,tmp-sym))))
 
 (defun jez-dbg (fmt &rest args)
   (princ (apply #'format (concat fmt "\n") args)))
