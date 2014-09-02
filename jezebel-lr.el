@@ -35,7 +35,7 @@
   ;; numbers.
   sym->symno
 
-  ;; All symbol numbers >= this value refer to nonterminals
+  ;; All symbol numbers >= `min-nonterm' refer to nonterminals.
   min-nonterm
 
   ;; Array of productions, which is essentially a vectorized form of
@@ -79,7 +79,12 @@
   ;; Hash table mapping reduce items to lookahead sets.  Do not access
   ;; this field directly; use `jez-lr-lookaheads', which lazily
   ;; computes the table.
-  lookaheads)
+  lookaheads
+
+  ;; Hash table mapping reduce items to lookahead sets with
+  ;; non-terminals included.  Do not access this field directly; use
+  ;; `jez-lr-lookaheads-full', which lazily computes the table.
+  lookaheads-full)
 
 ;; Aliases for properties of jez-lr that we compute eagerly
 ;; at construction time instead of lazily.
@@ -133,11 +138,12 @@
 (defun jez-lr-slurp-grammar (rules terminals start)
   "Construct a `jez-lr' object.
 RULES is a list of productions.  Each production is a cons of the
-form (LHS . RHS), where LHS produces RHS.  LHS is a non-terminal
-symbol; RHS is a list of terminal and non-terminal symbols.
-TERMINALS is a list of terminals.  Each is a cons cell (TERM
-. TERMNO), where TERM is a symbol naming the terminal and TERMNO
-is a number associated with that terminal. "
+form (LHS . RHS), where LHS produces RHS.  LHS is a symbol
+representing a non-terminal; RHS is a list of terminals and
+non-terminal symbols.  TERMINALS is a list of terminals.  Each
+isterminal a cons cell (TERM . TERMNO), where TERM is a symbol
+naming the terminal and TERMNO is a number associated with that
+terminal."
 
   (unless rules
       (error "no rules supplied"))
@@ -720,7 +726,7 @@ transition numbers!) that arrive at those state numbers.
 STATE->NTTN maps LR0 state numbers to non-terminal transitions
 leaving that state.
 
-An element NTTN2 in the returned vector is true of the following
+An element NTTN2 in the returned vector is true if the following
 relation holds:
 
   NTTN1 = NTTN of p1 -A->
@@ -793,8 +799,11 @@ relation holds:
 
 (defun jez-lr-Dr-impl (ntt min-nonterm transitions nttn)
   "Provide the directly-reads set.
-NTT is the result of calling `jez-lr-ntt'.  MIN-NONTERM is the
-result of calling `jez-lr-min-nonterm'.  TRANSITIONS is the
+NTT is the result of calling `jez-lr-ntt'.  MIN-NONTERM is one
+greater than the maximum symbol number to consider; to reason
+only about terminals, set MIN-NONTERM to the result of calling
+`jez-lr-min-nonterm'; to include all symbols in the lookahead
+set, set it to `jez-lr-number-symbols'.  TRANSITIONS is the
 result of calling `jez-lr-transitions'.  NTTN is a non-terminal
 transition number that identifies a transition p -A-> r.  The
 function returns a bool-vector describing the set of terminals
@@ -920,9 +929,14 @@ terminals.
                 (jez-lr-make-item (car entry) (cdr entry))
                 lr)))))
 
-(defun jez-lr--compute-lookaheads-lalr (lr)
+(defun jez-lr--compute-lookaheads-lalr (lr &optional full)
   "Compute LALR(1) information for LR.
 LR is a `jez-lr' object.
+
+If FULL is non-nil, include non-terminals in the lookahead sets;
+while this additional information is not useful for conventional
+LR parsers (since we consume only terminals from right context),
+it is useful for optimizing incremental reparsing.
 
 Return LA.  LA is a hash table mapping each reduce item to a
 lookahead set; a lookahead set is a bool vector of size equal to
@@ -940,7 +954,9 @@ the number of terminals in LR.
   (let* ( ;; Vector mapping symno -> nullability bool
          (nullability (jez-lr-nullability lr))
          (ntt (jez-lr-ntt lr))
-         (min-nonterm (jez-lr-min-nonterm lr))
+         (min-nonterm (if full
+                          (jez-lr-number-symbols lr)
+                        (jez-lr-min-nonterm lr)))
          (productions (jez-lr-productions lr))
          (transitions (jez-lr-transitions lr))
          (Dr (lambda (nttn)
@@ -999,8 +1015,7 @@ the number of terminals in LR.
              state->nttn
              ntt)))
          (_ (jez-dbg-LOOKBACK LOOKBACK states lr))
-         (LA (make-hash-table :test 'eq))
-         (nr-terminals (jez-lr-number-terminals lr)))
+         (LA (make-hash-table :test 'eq)))
     (dotimes (stateno (length states))
       (let ((state (aref states stateno)))
         (dolist (item state)
@@ -1012,7 +1027,7 @@ the number of terminals in LR.
             (when (= dotpos (length (cdr prod)))
               ;; LA(q, A→ω) = ∪{ Follow(p,A) | (q, A→ω) LOOKBACK (p,A) }
               ;; Here, `lb' is the number of transition (p,A).
-              (let* ((item-LA (make-bool-vector nr-terminals nil)))
+              (let* ((item-LA (make-bool-vector min-nonterm nil)))
                 (jez-do-set (lb (funcall LOOKBACK stateno prod))
                   (bool-vector-union
                    item-LA
@@ -1029,14 +1044,27 @@ resulting table."
       (setf (jez-lr--lookaheads lr)
             (jez-lr--compute-lookaheads-lalr lr))))
 
+(defun jez-lr-lookaheads-full (lr)
+  "Return reduce-item lookaheads (non-terminals included) for LR.
+See the definition of `jez-lr' for the format of the
+resulting table."
+  (or (jez-lr--lookaheads-full lr)
+      (setf (jez-lr--lookaheads-full lr)
+            (jez-lr--compute-lookaheads-lalr lr t))))
+
+(defun jez-lr-parse-table (lr)
+  "Construct an LR parser table for this LR object."
+
+  )
+
 (cl-defun jez-describe-automaton-dotviz (lr
                                          states
                                          transitions
                                          &key
-                                         numbered-states
-                                         ntt
-                                         numbered-ntt
-                                         la)
+                                           numbered-states
+                                           ntt
+                                           numbered-ntt
+                                           la)
   (princ "digraph {\n")
   (dotimes (stateno (length states))
     (let ((needbr nil)
@@ -1073,40 +1101,28 @@ resulting table."
 
 (cl-defun jez-lr-view-automaton (lr
                                  &key
-                                 keep-dotfile
-                                 numbered-states
-                                 numbered-ntt
-                                 la-type
-                                 background)
-  (jez-with-named-temp-file (dotfile "jez-view" nil ".dot")
-    (jez-with-named-temp-file (pdffile "jez-view" nil ".pdf")
-      (with-temp-file dotfile
-        (let* ((states (jez-lr-states lr))
-               (transitions (jez-lr-transitions lr))
-               (ntt (jez-lr-ntt lr))
-               (la (cl-ecase la-type
-                     ((:lalr) (jez-lr-lookaheads lr))
-                     ((nil) nil)))
-               (standard-output (current-buffer)))
-          (jez-describe-automaton-dotviz
-           lr
-           states
-           transitions
-           :numbered-states numbered-states
-           :numbered-ntt numbered-ntt
-           :ntt ntt
-           :la la)))
-      (shell-command (format "dot -Tpdf %s > %s"
-                             (shell-quote-argument dotfile)
-                             (shell-quote-argument pdffile)))
-      (let ((cmd (format "evince %s 2>/dev/null"
-                         (shell-quote-argument pdffile))))
-        (if background
-            (progn
-              (async-shell-command cmd)
-              (sleep-for 1)))
-        (shell-command cmd))
-      (when keep-dotfile
-        (setf dotfile nil)))))
+                                   numbered-states
+                                   numbered-ntt
+                                   la-type
+                                   background)
+  (jez-run-command "exec xdot"
+                   :name "jez-lr-view-automaton"
+                   :input (let* ((states (jez-lr-states lr))
+                                 (transitions (jez-lr-transitions lr))
+                                 (ntt (jez-lr-ntt lr))
+                                 (la (cl-ecase la-type
+                                       ((:lalr-full) (jez-lr-lookaheads-full lr))
+                                       ((:lalr) (jez-lr-lookaheads lr))
+                                       ((nil) nil))))
+                            (with-output-to-string
+                                (jez-describe-automaton-dotviz
+                                 lr
+                                 states
+                                 transitions
+                                 :numbered-states numbered-states
+                                 :numbered-ntt numbered-ntt
+                                 :ntt ntt
+                                 :la la)))
+                   :background background))
 
 (provide 'jezebel-lr)
