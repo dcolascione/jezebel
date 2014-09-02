@@ -470,4 +470,48 @@ PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
          (delete-file ,filename-symbol)))))
 (put 'jez-with-named-temp-file 'lisp-indent-function 1)
 
+(defun jez-string-strip (string)
+  "Strip leading and trailing whitespace from STRING."
+  (when (string-match "\\`[ \t\n\r\v]*\\(.*?\\)[ \t\n\r\v]*\\'" string)
+    (setf string (match-string 1 string)))
+  string)
+
+(defun jez-run-command-sentinel (proc reason)
+  (unless (process-live-p proc)
+    (setf reason (jez-string-strip reason))
+    (when (and (not (zerop (process-exit-status proc)))
+               (not (equal reason "killed")))
+      (message "process %s failed: %s: %s" proc reason
+               (jez-string-strip
+                (with-current-buffer (process-buffer proc)
+                  (buffer-substring (point-min) (point-max))))))
+    (delete-process proc)
+    (kill-buffer (process-buffer proc))))
+
+(cl-defun jez-run-command (command
+                           &key
+                             (name "jez-run-command")
+                             (input "")
+                             (background nil))
+  "Run COMMAND."
+  (let ((proc nil)
+        (pbuffer (generate-new-buffer name)))
+    (unwind-protect
+         (progn
+           (let ((process-connection-type nil))
+             (setf proc (start-file-process-shell-command
+                         name pbuffer command)))
+           (set-process-query-on-exit-flag proc nil)
+           (set-process-sentinel proc #'jez-run-command-sentinel)
+           (process-send-string proc input)
+           (process-send-eof proc)
+           (if background
+               (setf proc nil pbuffer nil)
+             (while (process-live-p proc)
+               (accept-process-output))))
+      (when proc
+        (delete-process proc))
+      (when pbuffer
+        (kill-buffer pbuffer)))))
+
 (provide 'jezebel-util)
