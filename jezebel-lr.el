@@ -135,6 +135,10 @@
   (cl-check-type dotpos integer)
   (cons prodno dotpos))
 
+(defun jez-lr-item-reduce-p (item productions)
+  (= (jez-lr-item-dotpos item)
+     (length (cdr (aref productions (jez-lr-item-prodno item))))))
+
 (defun jez-lr-slurp-grammar (rules terminals start)
   "Construct a `jez-lr' object.
 RULES is a list of productions.  Each production is a cons of the
@@ -797,32 +801,32 @@ relation holds:
                 (aset found nttn2 t)))))))
     found))
 
-(defun jez-lr-Dr-impl (ntt min-nonterm transitions nttn)
+(defun jez-lr-Dr-impl (ntt symno-bound transitions nttn)
   "Provide the directly-reads set.
-NTT is the result of calling `jez-lr-ntt'.  MIN-NONTERM is one
-greater than the maximum symbol number to consider; to reason
-only about terminals, set MIN-NONTERM to the result of calling
-`jez-lr-min-nonterm'; to include all symbols in the lookahead
-set, set it to `jez-lr-number-symbols'.  TRANSITIONS is the
-result of calling `jez-lr-transitions'.  NTTN is a non-terminal
-transition number that identifies a transition p -A-> r.  The
-function returns a bool-vector describing the set of terminals
-that satisfy the following constraint:
+NTT is the result of calling `jez-lr-ntt'.  SYMNO-BOUND is one
+greater than the maximum symbol number to consider.  TRANSITIONS
+is the result of calling `jez-lr-transitions'.  NTTN is a
+non-terminal transition number that identifies a transition p
+-A-> r.  The function returns a bool-vector describing the set of
+terminals (or symbols more broadly) that satisfy the following
+constraint:
 
   NTTN    = NTTN of p -A-> r
-  t       = some terminal
+  t       = some symbol with number less than `symno-bound'
   DR(p,A) = { t ∈ T | p -A-> r -t-> }
 
-The returned bool vector has cardinality equal to the number of
-terminals.
+The returned bool vector has cardinality equal to `symno-bound'.
 
-"
-  (let* ((Dr (make-bool-vector min-nonterm nil))
+To consider only terminals, set `symno-bound' to `min-nonterm';
+otherwise (to consider all symbols for lookahead, not just
+terminals), set `symno-bound' to one greater than the number of
+symbols."
+  (let* ((Dr (make-bool-vector symno-bound nil))
          (orig-tx (aref ntt nttn))
          (r (jez-tx-to orig-tx)))
     (dolist (tx transitions)
       (when (and (= (jez-tx-from tx) r)
-                 (< (jez-tx-via tx) min-nonterm))
+                 (< (jez-tx-via tx) symno-bound))
         (aset Dr (jez-tx-via tx) t)))
     Dr))
 
@@ -1078,7 +1082,12 @@ resulting table."
         (if needbr
             (princ "<br/>")
           (setf needbr t))
-        (princ (xml-escape-string (jez-dbg-format-item item lr la))))
+        (princ (format "<font %s>"
+                       (if (jez-lr-item-reduce-p item (jez-lr-productions lr))
+                           "color=\"blue\""
+                         "")))
+        (princ (xml-escape-string (jez-dbg-format-item item lr la)))
+        (princ "</font>"))
       (princ ">]")
       (princ ";\n")))
   (princ (format "hidden_start [style=invis];\n"))
