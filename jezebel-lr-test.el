@@ -525,3 +525,23 @@ T→{E}• LA:{- } $}
      :numbered-states t
      :numbered-ntt t
      :background nil)))
+
+(defun jezt-view-complex-lr ()
+  (jez-lr-view-automaton
+   (jez-lr-slurp-grammar
+    '((S E)
+      (E E P T)
+      (P -)
+      (P +)
+      (E T)
+      (T n)
+      (T \( E \)))
+    '((- . 1)
+      (+ . 2)
+      (\( . 3)
+      (\) . 4)
+      (n . 5))
+    'S)
+   :la-type :lalr-full
+   :numbered-states t
+   :background t))

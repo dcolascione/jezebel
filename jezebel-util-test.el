@@ -11,7 +11,7 @@ once for each variety of functional structure.
 For each iteration, replace the following symbols with the
 ones appropriate for the specific structure being tested:
 
-jezt-fstruct-field1 
+jezt-fstruct-field1
 jezt-fstruct-field2
 make-jezt-fstruct
 copy-and-modify-jezt-fstruct
@@ -23,7 +23,7 @@ copy-and-modify-jezt-fstruct
                                   (:named))
          field1
          field2)
-     
+
        (define-functional-struct (jezt-fstruct-vector
                                   (:type vector)
                                   (:named))
@@ -34,12 +34,12 @@ copy-and-modify-jezt-fstruct
                                   (:type list))
          field1
          field2)
-     
+
        (define-functional-struct (jezt-fstruct-vector-unnamed
                                   (:type vector))
          field1
-         field2)     
-     
+         field2)
+
        ,@(loop for s in '(jezt-fstruct-list
                           jezt-fstruct-vector
                           jezt-fstruct-list-unnamed
@@ -101,7 +101,7 @@ when the macro is expanded."
    (cl-macroexpand-all
     '(copy-and-modify-jezt-fstruct dummy :field1 (error "blah'")))
    (let ((v (make-jezt-fstruct)))
-     (should-error 
+     (should-error
       (copy-and-modify-jezt-fstruct v
        :field1 (error "bleg"))))))
 
@@ -135,5 +135,65 @@ when the macro is expanded."
         (should-equal (list a b)
                       (list 1 5))))))
 
+(ert-deftest jezt-combine-ranges ()
+  (should-equal (jez-combine-ranges nil) nil)
+  (should-equal (jez-combine-ranges
+                 (copy-sequence '(((1 . 2) a))))
+                '(((1 . 2) a)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((1 . 6) a)
+                    ((4 . 7) b))))
+                '(((1 . 3) a)
+                  ((4 . 6) a b)
+                  ((7 . 7) b)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((1 . 1) a)
+                    ((1 . 2) b))))
+                '(((1 . 1) a b)
+                  ((2 . 2) b)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((1 . 5) e)
+                    ((2 . 5) h))))
+                '(((1 . 1) e)
+                  ((2 . 5) e h)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((1 . 1) a)
+                    ((1 . 2) b)
+                    ((1 . 3) c)
+                    ((1 . 4) d)
+                    ((1 . 5) e)
+                    ((2 . 4) f)
+                    ((7 . 10) g)
+                    ((2 . 5) h))))
+                '(((1 . 1) a b c d e)
+                  ((2 . 2) b c d e f h)
+                  ((3 . 3) c d e f h)
+                  ((4 . 4) d e f h)
+                  ((5 . 5) e h)
+                  ((7 . 10) g)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((1 . 1) a)
+                    ((7 . 7) b))))
+                `(((1 . 1) a)
+                  ((7 . 7) b)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((,most-negative-fixnum . ,(+ 0 most-positive-fixnum)) a)
+                    ((4 . ,(+ -1 most-positive-fixnum)) b))))
+                `(((,most-negative-fixnum . 3) a)
+                  ((4 . ,(+ -1 most-positive-fixnum)) a b)
+                  ((,most-positive-fixnum . ,most-positive-fixnum) a)))
+  (should-equal (jez-combine-ranges
+                 (copy-sequence
+                  `(((,most-negative-fixnum . ,most-positive-fixnum) a)
+                    ((4 . 7) b))))
+                `(((,most-negative-fixnum . 3) a)
+                  ((4 . 7) a b)
+                  ((8 . ,most-positive-fixnum) a))))
 
 (provide 'jezebel-util-test)

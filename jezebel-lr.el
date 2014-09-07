@@ -1056,11 +1056,6 @@ resulting table."
       (setf (jez-lr--lookaheads-full lr)
             (jez-lr--compute-lookaheads-lalr lr t))))
 
-(defun jez-lr-parse-table (lr)
-  "Construct an LR parser table for this LR object."
-
-  )
-
 (cl-defun jez-describe-automaton-dotviz (lr
                                          states
                                          transitions
