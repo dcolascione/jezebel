@@ -481,10 +481,14 @@ PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
     (setf reason (jez-string-strip reason))
     (when (and (not (zerop (process-exit-status proc)))
                (not (equal reason "killed")))
-      (message "process %s failed: %s: %s" proc reason
+      (message "process %s failed: %s%s" proc reason
                (jez-string-strip
-                (with-current-buffer (process-buffer proc)
-                  (buffer-substring (point-min) (point-max))))))
+                (if (buffer-live-p (process-buffer proc))
+                    (concat
+                     ": "
+                     (with-current-buffer (process-buffer proc)
+                       (buffer-substring (point-min) (point-max))))
+                  ""))))
     (delete-process proc)
     (kill-buffer (process-buffer proc))))
 
@@ -492,10 +496,13 @@ PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
                            &key
                              (name "jez-run-command")
                              (input "")
-                             (background nil))
+                             (background nil)
+                             (debug nil))
   "Run COMMAND."
   (let ((proc nil)
         (pbuffer (generate-new-buffer name)))
+    (when debug
+      (princ input))
     (unwind-protect
          (progn
            (let ((process-connection-type nil))
@@ -508,7 +515,7 @@ PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
            (if background
                (setf proc nil pbuffer nil)
              (while (process-live-p proc)
-               (accept-process-output))))
+               (accept-process-output proc))))
       (when proc
         (delete-process proc))
       (when pbuffer
@@ -634,5 +641,11 @@ Return up to LIMIT entries, or unlimited if LIMIT is nil."
            (throw 'char-table-escape t)))
        char-table))
     (nreverse entries)))
+
+(defun jez-safe-char-format (c)
+  "Format C printable."
+  (if (aref printable-chars c)
+      (format "%c" c)
+    (format "\\x%x" c)))
 
 (provide 'jezebel-util)

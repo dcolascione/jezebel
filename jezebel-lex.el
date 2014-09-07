@@ -542,8 +542,10 @@ final states to the accepting state."
         (lambda (range)
           (let ((from (car range)) (to (cdr range)))
             (push (if (eql from to)
-                      (format "%c" from)
-                    (format "%c-%c" from to))
+                      (format "%s" (jez-safe-char-format from))
+                    (format "%s-%s"
+                            (jez-safe-char-format from)
+                            (jez-safe-char-format to)))
                   pieces))))
       (mapconcat #'identity (nreverse pieces) ", "))))
 
@@ -581,12 +583,13 @@ final states to the accepting state."
     (princ "}\n")
     nil))
 
-(cl-defun jez-view-nfa (nfa &key background)
+(cl-defun jez-view-nfa (nfa &key background debug)
   (jez-run-command "exec xdot"
                    :name "jez-view-nfa"
                    :input (with-output-to-string
                               (jez-describe-nfa-dotviz nfa))
-                   :background background))
+                   :background background
+                   :debug debug))
 
 (defun jez-lex-configure ()
   "Set up automatic incremental lexing for the current buffer."
