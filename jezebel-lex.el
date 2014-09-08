@@ -785,39 +785,86 @@ RULES is a list of matching rules and pragmas.  PRAGMA forms are
 lists beginning with keyword symbols and are described below.
 Each RULE is of the form
 
-  (PATTERN TOKEN &key WHEN)
+  (PATTERN TOKEN &key START GOTO)
 
 PATTERN is either a `jez-nfa' instance, a sexp valid as input to
 `jez-nfa-build', or a string in Emacs regular expression
 syntax[1].  TOKEN is a symbol naming the token that PATTERN
 matches.
 
-WHEN is a symbol naming a start condition or a list of these
+Order of rules is significant.  When more than one rule produces
+the longest match, the rule listed earlier has priority.
+
+START is a symbol naming a start condition or a list of these
 symbols.  The lexer will attempt to match PATTERN only when in
 the given start conditions.  All start conditions must be
-declared using the `:start-condition' pragma.  Start conditions
-work just like start conditions in GNU flex.
+declared using the `:start-condition' pragma.
+
+Start conditions work just like start conditions in GNU Flex.  If
+START is nil or not supplied, the rule matches in the INITIAL
+condition and in all non-exclusive start conditions.  A START of
+`t' matches every start condition.
+
+GOTO names a start condition to which to transition after
+matching the rule.  If nil, do not change the current start
+state.
 
 The following pragmas are supported:
 
   (:start-condition NAME &key EXCLUSIVE)
 
-NAME is a symbol naming the start condition.  EXCLUSIVE if
-non-nil indicates an exclusive start condition; start conditions
-are inclusive by default.  When the lexer is in an exclusive
-start condition, only rules tagged with that start condition are
-considered for potential matches; when the lexer is in an
-inclusive start condition, it tries to match both rules in that
-start condition and the rules in the default start condition..
+NAME is a symbol naming the start condition.  NAME cannot be nil
+or t.  EXCLUSIVE if non-nil indicates an exclusive start
+condition; start conditions are inclusive by default.  When the
+lexer is in an exclusive start condition, only rules tagged with
+that start condition are considered for potential matches; when
+the lexer is in an inclusive start condition, it tries to match
+both rules in that start condition and the rules in the default
+start condition.
 
- 1: The pcre2el library is required for string regular expression
+1: The pcre2el library is required for string regular expression
 support.
 "
-  (let ((start-conditions))
+  (let ((start-conditions '((INITIAL 0 nil)))
+        (nr-sc 1))
+    ;; Extract pragmas.  Build list of start conditions.
     (dolist (rule rules)
+      (unless (consp rule)
+        (error "invalid rule %S" rule))
+      (cond ((eq (car rule) :start-condition)
+             (cl-destructuring-bind (_ name &key exclusive) rule
+               (unless (and name (not eq name t) (symbolp name))
+                 (error "Start condition %S is not valid" name))
+               (when (assq name start-conditions)
+                 (error "Start condition %S already defined" name))
+               (push (list name nr-sc exclusive) start-conditions)
+               (incf nr-sc)))
+            ((keywordp (car rule))
+             (error "unknown rule pragma %S" rule))))
+    (let* (sc-rules (make-vector nr-sc nil))
+      ;; Extract rules.  For each start condition, amalgamate all the
+      ;; rules that can match.
+      (dolist (rule rules)
+        (unless ((keywordp (car rule)))
+          (cl-destructuring-bind (pattern token &key start goto)
+              rule
+            (let ((r2 (list pattern token goto)))
+              (if (or (eq start t) (null start))
+                  (dolist (sc start-conditions)
+                    (let ((sc-exclusive (nth 2 sc)))
+                      (when (or (eq start t) (not sc-exclusive))
+                        (push r2 (aref sc-rules (nth 1 sc))))))
+                (dolist (explicit-start
+                          (if (symbolp start) (list start) start))
+                  (let ((sc (or (car (assq explicit-start
+                                           start-conditions))
+                                (error "unknown start condition %S"
+                                       explicit-start))))
+                    (push r2 (aref sc-rules (nth 1 sc))))))))))
+      ;; Now that rules are collected into the appropriate buckets, we
+      ;; can build an NFA for each start state.
 
-      )
-    ))
+      )))
 
 (defun jez-lex-configure ()
   "Set up automatic incremental lexing for the current buffer."

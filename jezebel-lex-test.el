@@ -98,4 +98,7 @@ unevaluated list of (PATTERN TEXT EXPECTED) triplets for
   ("[^ab]" "c" "c")
   ("[^ab]" "-" "-"))
 
+(jezt-define-nfa-test jezt-nfa-empty
+  ("" "abc" ""))
+
 (provide 'jezebel-lex-test)
