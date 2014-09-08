@@ -42,9 +42,35 @@
   "Create a new NFA state."
   (cl-gensym "jez-nfa-state"))
 
-(defun jez-nfa-copy-state (_state)
+(defun jez-nfa-copy-state (state)
   "Create a new NFA state based on existing state STATE."
-  (jez-nfa-create-state))
+  (let ((new-state (jez-nfa-create-state)))
+    (fset new-state (symbol-function state))
+    new-state))
+
+(defun jez-nfa-merge-states (states)
+  "Merge the semantic information in STATES.
+Used during DFA creation."
+  (cond ((null states)
+         (jez-nfa-create-state))
+        ((null (cdr states))
+         (jez-nfa-copy-state (car states)))
+        (t
+         (let ((new-state (jez-nfa-create-state))
+               (calls (cl-delete-duplicates
+                       (cl-loop
+                          for state in states
+                          for fn = (symbol-function state)
+                          when fn collect fn))))
+           (fset new-state
+                 (cond ((null calls) nil)
+                       ((null (cdr calls)) (car calls))
+                       (t
+                        `(lambda ()
+                           ,@(cl-loop
+                                for call in calls
+                                collect `(funcall (function ,call)))))))
+           new-state))))
 
 (defun jez-nfa-state-< (a b)
   "Compare two states.  The order is arbitrary but consistent."
@@ -125,7 +151,10 @@ finite automata, calling both \"NFA\"s."
   ;; second "a" know to transition to a state where we can match "b".
   ;; The routines below call `jez-nfa-unshare' to manage this flag and
   ;; to avoid aliasing problems.
-  shared-p)
+  shared-p
+  ;; This flag indicates that this NFA contains only deterministic
+  ;; transitions.
+  deterministic-p)
 
 (defun jez-nfa-remap-state (state-map state)
   (or (gethash state state-map)
@@ -227,6 +256,20 @@ string."
                           (jez-nfa-start next)))
               (mapcar #'jez-nfa-txset nfa-list))))))
 
+(defun jez-nfa-with-accept-function (nfa function)
+  "Make an NFA that calls FUNCTION when entering an accepting state."
+  ;; Add a ε-transition to a new state; on entry to this state, we
+  ;; call the success function.  The DFA transition will propagate
+  ;; this call to all accepting states.
+  (let ((accept (jez-nfa-create-state)))
+    (fset accept function)
+    (jez-nfa--create
+     (jez-nfa-start nfa)
+     accept
+     (jez-nfa-txset-create
+      (jez-nfa-tx-create (jez-nfa-accept nfa) :ε accept)
+      (jez-nfa-txset nfa)))))
+
 (defun jez-nfa-union (&rest nfa-list)
   "Make an NFA that matches the union of the given NFAs.
 If NFA-LIST is empty, return an NFA that matches the empty
@@ -292,7 +335,9 @@ supported.  The unsupported features are:
   * point, word, and {beginning-,end-}-of-buffer tests
 
 Groups are supported, but group capture is not, so all groups are
-treated as shy groups."
+treated as shy groups.
+
+The (regex REGEX) facility required the pcre2el library."
 
   ;; N.B. Clauses below are in the order in which they appear in the
   ;; `rx' documentation.
@@ -370,7 +415,7 @@ treated as shy groups."
 
     ;; Character sets
     ((or `not-newline `nonl)
-     (jez-nfa-build `(not ?\n)))
+     (jez-nfa-build `(not (any ?\n))))
     (`anything
      (jez-nfa-build `(in (0 . ,(max-char)))))
     (`(,(or `any `in `char) . ,sets)
@@ -438,6 +483,9 @@ of transitions that depart from that state."
   "Destructively reverse NFA.
 If NFA shares substructure with another NFA, behavior is
 unspecified.  Return the reversed NFA."
+  (when (jez-nfa-deterministic-p nfa)
+    ;; A DFA backwards is not necessarily a DFA
+    (setf (jez-nfa-deterministic-p nfa) nil))
   (jez-nfa-txset-walk (jez-nfa-txset nfa)
     (lambda (tx)
       (psetf (jez-nfa-tx-from tx) (jez-nfa-tx-to tx)
@@ -505,12 +553,11 @@ reachable by transitions from one of the states in STATES."
                          ctx))))))))
      ctx)))
 
-(defun jez-nfa-make-dfa (nfa &optional unminimized)
+(defun jez-nfa-make-dfa-1 (nfa)
   "Make a DFA based on NFA using the standard subset construction.
 Return a `jez-nfa' object contains only deterministic
 transitions.  The returned DFA contains ε-transitions from all
-final states to the accepting state.  If UNMINIMIZED is present,
-do not perform DFA minimization on the result."
+final states to the accepting state."
   (let* ((from->tx (jez-nfa-index-departures nfa))
          (start-closure (jez-nfa-ε-closure
                          from->tx
@@ -520,45 +567,57 @@ do not perform DFA minimization on the result."
          (dfa-transitions nil)
          ;; Map ε-closures to DFA states
          (dfa-states (make-hash-table :test 'equal))
-         ;; Closures to process
-         (work-queue (list start-closure)))
-    (puthash start-closure (jez-nfa-create-state) dfa-states)
-    (puthash start-closure (jez-nfa-create-state) dfa-states)
-    (while work-queue
-      (let* ((closure (pop work-queue))
-             (dfa-state (gethash closure dfa-states)))
-        (dolist (raw-tx (jez-nfa-closure-txmap from->tx closure))
-          (let* ((dst-closure (jez-nfa-ε-closure from->tx (cdr raw-tx))))
+         ;; Closures to process; enqueue-closure adds new DFA states
+         ;; to this list as we see them.
+         (work-queue nil))
+    (cl-flet ((enqueue-closure (closure)
+                (or (gethash closure dfa-states)
+                    (let ((new-dfa-state (jez-nfa-merge-states closure)))
+                      (puthash closure new-dfa-state dfa-states)
+                      (push closure work-queue)
+                      new-dfa-state))))
+      (enqueue-closure start-closure)
+      (while work-queue
+        (let* ((closure (pop work-queue))
+               (dfa-state (gethash closure dfa-states)))
+          (dolist (raw-tx (jez-nfa-closure-txmap from->tx closure))
             (push (jez-nfa-tx-create
                    dfa-state
                    (car raw-tx)
-                   (or (gethash dst-closure dfa-states)
-                       (let ((new-dfa-state
-                              (jez-nfa-create-state)))
-                         (puthash dst-closure
-                                  new-dfa-state
-                                  dfa-states)
-                         (push dst-closure work-queue)
-                         new-dfa-state)))
-                  dfa-transitions)))
-        (when (memq nfa-accept closure)
-          (push (jez-nfa-tx-create dfa-state :ε dfa-accept)
-                dfa-transitions))))
-    (let ((dfa (jez-nfa--create
-                (gethash start-closure dfa-states)
-                dfa-accept
-                dfa-transitions)))
-      (if unminimized
-          dfa
-        ;; Apply Brzozowski's algorithm to minimize the DFA.  By
-        ;; reversing the DFA (producing an NFA again) and building a
-        ;; DFA out of that, we produce a minimized DFA for the reverse
-        ;; language, and by applying this operation a second time, we
-        ;; produce a minimal DFA for our original language.
-        (jez-nfa-make-dfa
-         (jez-nfa-reverse-in-place
-          (jez-nfa-make-dfa (jez-nfa-reverse-in-place dfa) t))
-         t)))))
+                   (enqueue-closure
+                    (jez-nfa-ε-closure from->tx (cdr raw-tx))))
+                  dfa-transitions))
+          (when (memq nfa-accept closure)
+            (push (jez-nfa-tx-create dfa-state :ε dfa-accept)
+                  dfa-transitions)))))
+    (jez-nfa--create
+     (gethash start-closure dfa-states)
+     dfa-accept
+     dfa-transitions)))
+
+(defun jez-nfa-make-dfa (nfa &optional unminimized)
+  "Make a DFA based on NFA using the standard subset construction.
+Return a `jez-nfa' object contains only deterministic
+transitions.  The returned DFA contains ε-transitions from all
+final states to the accepting state.  If UNMINIMIZED is
+non-`nil', do not minimize the number of states in the returned
+DFA.  If NFA is already deterministic, return it unchanged."
+  (if (jez-nfa-deterministic-p nfa) nfa
+    (let ((dfa (if unminimized
+                   (jez-nfa-make-dfa-1 nfa)
+                 ;; Apply Brzozowski's algorithm to minimize the DFA.
+                 ;; By reversing the DFA (producing an NFA again) and
+                 ;; building a DFA out of that, we produce a minimized
+                 ;; DFA for the reverse language, and by applying this
+                 ;; operation a second time, we produce a minimal DFA
+                 ;; for our original language.
+                 (jez-nfa-make-dfa-1
+                  (jez-nfa-reverse-in-place
+                   (jez-nfa-make-dfa-1
+                    (jez-nfa-reverse-in-place
+                     (jez-nfa-make-dfa-1 nfa))))))))
+      (setf (jez-nfa-deterministic-p dfa) t)
+      dfa)))
 
 (defun jez-nfa-describe-via (via)
   (if (eq via :ε) "ε"
@@ -574,6 +633,27 @@ do not perform DFA minimization on the result."
                   pieces))))
       (mapconcat #'identity (nreverse pieces) ", "))))
 
+(defun jez-nfa-number-states (nfa)
+  "Assign numbers to states in NFA.
+Return a hash table mapping states to their state numbers.  State
+numbers begin at zero, which is always the state number for the
+starting state."
+  (let ((state->stateno (make-hash-table :test 'eq))
+        (stateno 0))
+    (puthash (jez-nfa-start nfa) 0 state->stateno)
+    (jez-nfa-txset-walk (jez-nfa-txset nfa)
+      (lambda (tx)
+        (let ((from (jez-nfa-tx-from tx))
+              (to (jez-nfa-tx-to tx)))
+          (unless (gethash from state->stateno)
+            (puthash from (incf stateno) state->stateno))
+          (unless (gethash to state->stateno)
+            (puthash to (incf stateno) state->stateno)))))
+    (let ((accept (jez-nfa-accept nfa)))
+      (unless (gethash accept state->stateno)
+        (puthash accept (incf stateno) state->stateno)))
+    state->stateno))
+
 (cl-defun jez-describe-nfa-dotviz (nfa)
   (let* ((state-numbers (make-hash-table :test 'eq))
          (next-stateno -1)
@@ -581,14 +661,17 @@ do not perform DFA minimization on the result."
           (lambda (state)
             (or (gethash state state-numbers)
                 (progn
-                  (let ((sn (incf next-stateno)))
-                    (princ (format "state_%d [label=%s];\n"
-                                   sn
-                                   (cond ((eq state (jez-nfa-start nfa))
-                                          "START")
-                                         ((eq state (jez-nfa-accept nfa))
-                                          "ACCEPT")
-                                         (t sn))))
+                  (let* ((sn (incf next-stateno))
+                         (label (cond ((eq state (jez-nfa-start nfa))
+                                       "START")
+                                      ((eq state (jez-nfa-accept nfa))
+                                       "ACCEPT")
+                                      (t sn)))
+                         (label (if (not (symbol-function state))
+                                    label
+                                  (format "%s\n%S" label
+                                          (symbol-function state)))))
+                    (princ (format "state_%d [label=%s];\n" sn label))
                     (puthash state sn state-numbers))))))
          (work-queue (list (jez-nfa-start nfa)))
          (from->tx (jez-nfa-index-departures nfa))
@@ -600,10 +683,10 @@ do not perform DFA minimization on the result."
           (puthash state t seen)
           (dolist (tx (gethash state from->tx))
             (princ (format "state_%d -> state_%d [label=<%s>];\n"
-                       (funcall intern-state (jez-nfa-tx-from tx))
-                       (funcall intern-state (jez-nfa-tx-to tx))
-                       (xml-escape-string
-                        (jez-nfa-describe-via (jez-nfa-tx-via tx)))))
+                           (funcall intern-state (jez-nfa-tx-from tx))
+                           (funcall intern-state (jez-nfa-tx-to tx))
+                           (xml-escape-string
+                            (jez-nfa-describe-via (jez-nfa-tx-via tx)))))
             (push (jez-nfa-tx-to tx) work-queue)))))
     (princ "}\n")
     nil))
@@ -615,6 +698,126 @@ do not perform DFA minimization on the result."
                               (jez-describe-nfa-dotviz nfa))
                    :background background
                    :debug debug))
+
+(cl-defstruct (jez-nfa-simple-automaton
+                (:constructor jez-nfa-simple-automaton--create))
+  ;; Current state number (0 is the starting state)
+  state
+  ;; Array mapping state numbers to functions to call on entry to each
+  ;; state.
+  entry-functions
+  ;; Array mapping state numbers to char tables.  Each char
+  ;; table maps to the next state number.
+  transitions)
+
+(defun jez-nfa-simple-automaton-create (nfa)
+  "Create a simple automaton for matching NFA.
+ This automaton accepts symbols one at a time and either
+transitions to a new state or fails.  It is primarily useful for
+testing the NFA engine."
+  (let* ((dfa (jez-nfa-make-dfa nfa))
+         (state->stateno (jez-nfa-number-states dfa))
+         (nr-states (hash-table-count state->stateno))
+         (entry-functions (make-vector nr-states nil))
+         (transitions (make-vector nr-states nil)))
+    (jez-nfa-txset-walk (jez-nfa-txset dfa)
+      (lambda (tx)
+        (unless (eq (jez-nfa-tx-via tx) :ε)
+          (let* ((from (jez-nfa-tx-from tx))
+                 (from-sn (gethash from state->stateno))
+                 (ct (or (aref transitions from-sn)
+                         (aset transitions
+                               from-sn
+                               (make-char-table nil))))
+                 (to (jez-nfa-tx-to tx))
+                 (to-sn (gethash to state->stateno)))
+            (jez-nfa-map-via-ranges (jez-nfa-tx-via tx)
+              (lambda (r)
+                (set-char-table-range ct r to-sn)))))))
+    (maphash
+     (lambda (state stateno)
+       (unless (aref transitions stateno)
+         (setf (aref transitions stateno) (make-char-table nil)))
+       (when (symbol-function state)
+         (aset entry-functions stateno (symbol-function state))))
+     state->stateno)
+    (jez-nfa-simple-automaton--create
+     :state nil
+     :entry-functions entry-functions
+     :transitions transitions)))
+
+(defun jez-nfa-simple-automaton-reset (automaton)
+  "Reset a simple automaton to its start state."
+  (setf (jez-nfa-simple-automaton-state automaton) 0)
+  (let ((entry-function
+         (aref (jez-nfa-simple-automaton-entry-functions automaton) 0)))
+    (when entry-function
+      (funcall entry-function))))
+
+(defun jez-nfa-simple-automaton-transition (automaton c)
+  "Transition AUTOMATON to a new state on C.
+C is a character.  Return the new state or nil for failure."
+  (let* ((state (jez-nfa-simple-automaton-state automaton))
+         (transitions (jez-nfa-simple-automaton-transitions automaton))
+         (ct (aref transitions state))
+         (next-state (aref ct c)))
+    (if (not next-state)
+        nil
+      (let ((entry-function
+             (aref (jez-nfa-simple-automaton-entry-functions automaton)
+                   next-state)))
+        (when entry-function
+          (funcall entry-function))
+        (setf (jez-nfa-simple-automaton-state automaton) next-state)))))
+
+(cl-defstruct jez-lexer ())
+
+(cl-defun jez-lex-create (rules)
+  "Build a lexer.
+
+`jez-lex-create' creates a conventional lexer.  The lexer scans
+input from left to right and turns it into a token stream by
+matching the input against a set of patterns.  At each point, we
+simultaneously try all active patterns and use the one with the
+longest match.
+
+RULES is a list of matching rules and pragmas.  PRAGMA forms are
+lists beginning with keyword symbols and are described below.
+Each RULE is of the form
+
+  (PATTERN TOKEN &key WHEN)
+
+PATTERN is either a `jez-nfa' instance, a sexp valid as input to
+`jez-nfa-build', or a string in Emacs regular expression
+syntax[1].  TOKEN is a symbol naming the token that PATTERN
+matches.
+
+WHEN is a symbol naming a start condition or a list of these
+symbols.  The lexer will attempt to match PATTERN only when in
+the given start conditions.  All start conditions must be
+declared using the `:start-condition' pragma.  Start conditions
+work just like start conditions in GNU flex.
+
+The following pragmas are supported:
+
+  (:start-condition NAME &key EXCLUSIVE)
+
+NAME is a symbol naming the start condition.  EXCLUSIVE if
+non-nil indicates an exclusive start condition; start conditions
+are inclusive by default.  When the lexer is in an exclusive
+start condition, only rules tagged with that start condition are
+considered for potential matches; when the lexer is in an
+inclusive start condition, it tries to match both rules in that
+start condition and the rules in the default start condition..
+
+ 1: The pcre2el library is required for string regular expression
+support.
+"
+  (let ((start-conditions))
+    (dolist (rule rules)
+
+      )
+    ))
 
 (defun jez-lex-configure ()
   "Set up automatic incremental lexing for the current buffer."

@@ -25,4 +25,11 @@
      when (string-match "^jezt?-" (symbol-name x))
      do (unintern x nil)))
 
+(defun jezt-run-test-at-point ()
+  (interactive)
+  (call-interactively 'eval-defun)
+  (let ((window (selected-window)))
+    (ert :new )
+    (select-window window)))
+
 (provide 'jezebel-test-util)
