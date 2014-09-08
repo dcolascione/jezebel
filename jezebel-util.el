@@ -613,7 +613,8 @@ where CHAR-TABLE is non-nil."
     (map-char-table
      (lambda (r v)
        (when v
-         (let ((lb (car r)) (ub (cdr r)))
+         (let* ((r (if (characterp r) (cons r r) r))
+                (lb (car r)) (ub (cdr r)))
            (when (< base lb)
              (set-char-table-range
               inverted-char-table (cons base (1- lb)) t))

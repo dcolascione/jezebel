@@ -73,16 +73,16 @@ TO is the state being transitioned to."
   (cl-check-type to jez-nfa-state)
   (cl-list* from via to))
 
-(defun jez-nfa-tx-from (tx)
+(cl-defsubst jez-nfa-tx-from (tx)
   "Return the state from which TX transitions."
   (car tx))
 
-(defun jez-nfa-tx-via (tx)
+(cl-defsubst jez-nfa-tx-via (tx)
   "Return the edge label for TX.
 Return value is a `jez-nfa-edge'."
   (cadr tx))
 
-(defun jez-nfa-tx-to (tx)
+(cl-defsubst jez-nfa-tx-to (tx)
   "Return the state to which TX transitions."
   (cddr tx))
 
@@ -131,7 +131,7 @@ finite automata, calling both \"NFA\"s."
   (or (gethash state state-map)
       (puthash state (jez-nfa-copy-state state) state-map)))
 
-(defun jez-nfa-deep-copy (nfa)
+(defun jez-nfa-deep-copy (nfa &optional reverse)
   "Return a copy of NFA with no shared substructure.
 The copy's shared flag is unset."
   (let ((state-map (make-hash-table :test 'eq))
@@ -268,12 +268,12 @@ string."
 (defun jez-nfa-repeat (n m repeated-nfa)
   "Make an NFA that matches REPEATED-NFA N to M times inclusive.
 Matching zero times meaning matching the empty string."
-  (let (alternatives template)
-    (dotimes (i (1+ m))
-      (when (<= n i)
-        (push template alternatives))
-      (push repeated-nfa template))
-    (apply #'jez-nfa-union alternatives)))
+  (apply #'jez-nfa-union
+         (cl-loop
+            with template = nil
+            for i upto m
+            when (<= n i) collect (apply #'jez-nfa-concat template)
+            do (push repeated-nfa template))))
 
 (defun jez-nfa-empty ()
   "Make an NFA that matches the empty string."
@@ -377,6 +377,7 @@ treated as shy groups."
       (jez-nfa-from-via (apply #'jez-nfa-via-charsets sets)))
     (`(not (any . ,sets))
       (jez-nfa-from-via (apply #'jez-nfa-via-charsets-negated sets)))
+
     ;; Concatenation
     ((pred stringp)
      (jez-nfa-build `(: ,@erx)))
@@ -403,7 +404,7 @@ treated as shy groups."
     (`(,(or `zero-or-one `optional `opt `\?) . ,atoms)
       (jez-nfa-repeat 0 1 (jez-nfa-build `(: ,@atoms))))
     (`(repeat ,n ,sexp)
-      (jez-nfa-repeat n n sexp))
+      (jez-nfa-repeat n n (jez-nfa-build sexp)))
     (`(= ,n . ,atoms)
       (jez-nfa-repeat n n (jez-nfa-build `(: ,@atoms))))
     (`(>= ,n . ,atoms)
@@ -411,7 +412,7 @@ treated as shy groups."
         (jez-nfa-concat (jez-nfa-repeat n n repeated-nfa)
                         (jez-nfa-kleene repeated-nfa))))
     (`(repeat ,n ,m ,sexp)
-      (jez-nfa-repeat n m sexp))
+      (jez-nfa-repeat n m (jez-nfa-build sexp)))
     (`(** ,n ,m . ,atoms)
       (jez-nfa-repeat n m (jez-nfa-build `(: ,@atoms))))
 
@@ -432,6 +433,18 @@ of transitions that depart from that state."
       (lambda (tx)
         (push tx (gethash (jez-nfa-tx-from tx) index))))
     index))
+
+(defun jez-nfa-reverse-in-place (nfa)
+  "Destructively reverse NFA.
+If NFA shares substructure with another NFA, behavior is
+unspecified.  Return the reversed NFA."
+  (jez-nfa-txset-walk (jez-nfa-txset nfa)
+    (lambda (tx)
+      (psetf (jez-nfa-tx-from tx) (jez-nfa-tx-to tx)
+             (jez-nfa-tx-to tx) (jez-nfa-tx-from tx))))
+  (psetf (jez-nfa-accept nfa) (jez-nfa-start nfa)
+         (jez-nfa-start nfa) (jez-nfa-accept nfa))
+  nfa)
 
 (defun jez-nfa-ε-closure (from->tx states)
   "Find states reachable from STATES by zero or more ε transitions.
@@ -492,11 +505,12 @@ reachable by transitions from one of the states in STATES."
                          ctx))))))))
      ctx)))
 
-(defun jez-nfa-make-dfa (nfa)
+(defun jez-nfa-make-dfa (nfa &optional unminimized)
   "Make a DFA based on NFA using the standard subset construction.
 Return a `jez-nfa' object contains only deterministic
 transitions.  The returned DFA contains ε-transitions from all
-final states to the accepting state."
+final states to the accepting state.  If UNMINIMIZED is present,
+do not perform DFA minimization on the result."
   (let* ((from->tx (jez-nfa-index-departures nfa))
          (start-closure (jez-nfa-ε-closure
                          from->tx
@@ -519,21 +533,32 @@ final states to the accepting state."
                    dfa-state
                    (car raw-tx)
                    (or (gethash dst-closure dfa-states)
-                                    (let ((new-dfa-state
-                                           (jez-nfa-create-state)))
-                                      (puthash dst-closure
-                                               new-dfa-state
-                                               dfa-states)
-                                      (push dst-closure work-queue)
-                                      new-dfa-state)))
+                       (let ((new-dfa-state
+                              (jez-nfa-create-state)))
+                         (puthash dst-closure
+                                  new-dfa-state
+                                  dfa-states)
+                         (push dst-closure work-queue)
+                         new-dfa-state)))
                   dfa-transitions)))
         (when (memq nfa-accept closure)
           (push (jez-nfa-tx-create dfa-state :ε dfa-accept)
                 dfa-transitions))))
-    (jez-nfa--create
-     (gethash start-closure dfa-states)
-     dfa-accept
-     dfa-transitions)))
+    (let ((dfa (jez-nfa--create
+                (gethash start-closure dfa-states)
+                dfa-accept
+                dfa-transitions)))
+      (if unminimized
+          dfa
+        ;; Apply Brzozowski's algorithm to minimize the DFA.  By
+        ;; reversing the DFA (producing an NFA again) and building a
+        ;; DFA out of that, we produce a minimized DFA for the reverse
+        ;; language, and by applying this operation a second time, we
+        ;; produce a minimal DFA for our original language.
+        (jez-nfa-make-dfa
+         (jez-nfa-reverse-in-place
+          (jez-nfa-make-dfa (jez-nfa-reverse-in-place dfa) t))
+         t)))))
 
 (defun jez-nfa-describe-via (via)
   (if (eq via :ε) "ε"
