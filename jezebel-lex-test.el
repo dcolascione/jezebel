@@ -12,11 +12,11 @@
   "Match NFA against TEXT and return the longest match.
 Return nil if NFA did not match at all."
   (let* ((auto (jez-nfa-simple-automaton-create
-                (jez-nfa-with-accept-function
+                (jez-nfa-with-tags
                  (cond ((jez-nfa-p nfa) nfa)
                        ((stringp nfa) (jez-nfa-build `(regexp ,nfa)))
                        (t (jez-nfa-build nfa)))
-                 #'jezt-nfa-on-accept)))
+                 'jezt-nfa-on-accept)))
          (jezt-nfa-success-index nil)
          (length (length text))
          (i 0))

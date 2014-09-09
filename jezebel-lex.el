@@ -38,38 +38,36 @@
 (defvar jez-lex-token-length nil)
 
 (cl-deftype jez-nfa-state () '(and (not null) symbolp))
-(defun jez-nfa-create-state ()
+(defun jez-nfa-state-create ()
   "Create a new NFA state."
   (cl-gensym "jez-nfa-state"))
 
-(defun jez-nfa-copy-state (state)
+(defun jez-nfa-state-tags (state)
+  "Return the list of tags associated with STATE."
+  (jez-symbol-value state))
+
+(defun jez-nfa-state-copy (state)
   "Create a new NFA state based on existing state STATE."
-  (let ((new-state (jez-nfa-create-state)))
-    (fset new-state (symbol-function state))
+  (let ((new-state (jez-nfa-state-create)))
+    (set new-state (jez-symbol-value state))
     new-state))
 
-(defun jez-nfa-merge-states (states)
+(defun jez-nfa-state-merge (states)
   "Merge the semantic information in STATES.
 Used during DFA creation."
   (cond ((null states)
-         (jez-nfa-create-state))
+         (jez-nfa-state-create))
         ((null (cdr states))
-         (jez-nfa-copy-state (car states)))
+         (jez-nfa-state-copy (car states)))
         (t
-         (let ((new-state (jez-nfa-create-state))
-               (calls (cl-delete-duplicates
-                       (cl-loop
-                          for state in states
-                          for fn = (symbol-function state)
-                          when fn collect fn))))
-           (fset new-state
-                 (cond ((null calls) nil)
-                       ((null (cdr calls)) (car calls))
-                       (t
-                        `(lambda ()
-                           ,@(cl-loop
-                                for call in calls
-                                collect `(funcall (function ,call)))))))
+         (let ((new-state (jez-nfa-state-create)))
+           (set new-state
+                (let ((new-tags))
+                  (dolist (state states)
+                    (dolist (tag (jez-nfa-state-tags state))
+                      (unless (memq tag new-tags)
+                        (push tag new-tags))))
+                  (nreverse new-tags)))
            new-state))))
 
 (defun jez-nfa-state-< (a b)
@@ -130,9 +128,7 @@ FUNCTION accepts one argument: the transition object."
          (funcall function txset))))
 (put 'jez-nfa-txset-walk 'lisp-indent-function 1)
 
-(cl-defstruct (jez-nfa
-                (:constructor jez-nfa--create
-                              (start accept txset)))
+(cl-defstruct (jez-nfa (:constructor jez-nfa--create (start accept txset)))
   "This structure represents a finite automaton.  We actually use
 the same representation for deterministic and non-deterministic
 finite automata, calling both \"NFA\"s."
@@ -158,7 +154,7 @@ finite automata, calling both \"NFA\"s."
 
 (defun jez-nfa-remap-state (state-map state)
   (or (gethash state state-map)
-      (puthash state (jez-nfa-copy-state state) state-map)))
+      (puthash state (jez-nfa-state-copy state) state-map)))
 
 (defun jez-nfa-deep-copy (nfa &optional reverse)
   "Return a copy of NFA with no shared substructure.
@@ -188,8 +184,8 @@ The copy's shared flag is unset."
 
 (defun jez-nfa-character (c)
   "Make an NFA that matches a character C."
-  (let* ((start (jez-nfa-create-state))
-         (accept (jez-nfa-create-state)))
+  (let* ((start (jez-nfa-state-create))
+         (accept (jez-nfa-state-create)))
     (jez-nfa--create start accept (jez-nfa-tx-create start c accept))))
 
 (defun jez-nfa-from-via (v)
@@ -256,13 +252,12 @@ string."
                           (jez-nfa-start next)))
               (mapcar #'jez-nfa-txset nfa-list))))))
 
-(defun jez-nfa-with-accept-function (nfa function)
-  "Make an NFA that calls FUNCTION when entering an accepting state."
-  ;; Add a ε-transition to a new state; on entry to this state, we
-  ;; call the success function.  The DFA transition will propagate
-  ;; this call to all accepting states.
-  (let ((accept (jez-nfa-create-state)))
-    (fset accept function)
+(defun jez-nfa-with-tags (nfa &rest tags)
+  "Make an NFA with TAGS in its accept state.
+TAGS are arbitrary lisp values; internal NFA machinery may merge
+  tags that are `equal'."
+  (let ((accept (jez-nfa-state-create)))
+    (set accept tags)
     (jez-nfa--create
      (jez-nfa-start nfa)
      accept
@@ -277,8 +272,8 @@ string."
   (if (not nfa-list)
       (jez-nfa-empty)
     (let* ((nfa-list (mapcar #'jez-nfa-unshare nfa-list))
-           (start (jez-nfa-create-state))
-           (accept (jez-nfa-create-state)))
+           (start (jez-nfa-state-create))
+           (accept (jez-nfa-state-create)))
       (jez-nfa--create
        start
        accept
@@ -320,112 +315,15 @@ Matching zero times meaning matching the empty string."
 
 (defun jez-nfa-empty ()
   "Make an NFA that matches the empty string."
-  (let ((state (jez-nfa-create-state)))
+  (let ((state (jez-nfa-state-create)))
     (jez-nfa--create state state nil)))
 
-(defun jez-nfa-build (erx)
-  "Build an NFA matcher from extended rx pattern ERX.
-ERX patterns re normal `rx' patterns except that atoms can also
-be `jez-nfa' instances and some features of `rx' are not
-supported.  The unsupported features are:
-
-  * back-references
-  * non-greedy operators
-  * syntax table queries
-  * point, word, and {beginning-,end-}-of-buffer tests
-
-Groups are supported, but group capture is not, so all groups are
-treated as shy groups.
-
-The (regex REGEX) facility required the pcre2el library."
-
-  ;; N.B. Clauses below are in the order in which they appear in the
-  ;; `rx' documentation.
-
+(defun jez-nfa-build-recognize-combinators (erx)
+  "NFA builder recognizer for NFA combinators.
+ERX is an ERX expression; return a `jez-nfa' instance or `nil' if
+no construct is recognized."
   (pcase erx
-    ;; Things recognized but not supported
-    ((or `line-start
-         `bol
-         `line-end
-         `eol
-         `start-start
-         `bos
-         `bot
-         `string-end
-         `eos
-         `eot
-         `buffer-start
-         `buffer-end
-         `point
-         `word-start
-         `bow
-         `word-end
-         `eow
-         `word-boundary
-         `(not word-boundary)
-         `symbol-start
-         `symbol-end
-         `digit
-         `numeric
-         `num
-         `control
-         `cntrl
-         `hex-digit
-         `hex
-         `xdigit
-         `blank
-         `graphic
-         `graph
-         `printing
-         `print
-         `alphanumeric
-         `alnum
-         `letter
-         `alphabetic
-         `alpha
-         `ascii
-         `nonascii
-         `lower
-         `lower-case
-         `upper
-         `upper-case
-         `punctuation
-         `punct
-         `space
-         `whitespace
-         `white
-         `word
-         `wordchar
-         `not-wordchar
-         `(syntax ,_)
-         `(not (syntax ,_))
-         `(category ,_)
-         `(not (category ,_))
-         `(minimal-match . ,_)
-         `(*? . ,_)
-         `(+? . ,_)
-         `(?? . ,_)
-         `(backref ,_))
-     (error "not implemented: %S" erx))
-
-    ;; True atoms
-    ((pred jez-nfa-p) erx)
-    ((pred characterp)
-     (jez-nfa-character erx))
-
-    ;; Character sets
-    ((or `not-newline `nonl)
-     (jez-nfa-build `(not (any ?\n))))
-    (`anything
-     (jez-nfa-build `(in (0 . ,(max-char)))))
-    (`(,(or `any `in `char) . ,sets)
-      (jez-nfa-from-via (apply #'jez-nfa-via-charsets sets)))
-    (`(not (any . ,sets))
-      (jez-nfa-from-via (apply #'jez-nfa-via-charsets-negated sets)))
-
     ;; Concatenation
-    ((pred stringp)
-     (jez-nfa-build `(: ,@erx)))
     (`(,(or `and `: `seq `sequence `submatch `group) . ,atoms)
       (apply #'jez-nfa-concat (mapcar #'jez-nfa-build atoms)))
     (`(,(or `submatch-n `group-n) ,_ . ,atoms)
@@ -461,13 +359,64 @@ The (regex REGEX) facility required the pcre2el library."
     (`(** ,n ,m . ,atoms)
       (jez-nfa-repeat n m (jez-nfa-build `(: ,@atoms))))
 
-    ;; Miscellaneous
-    (`(eval ,form)
-      (jez-nfa-build (eval form)))
+    ;; Non-greedy operators
+    ((or `(minimal-match . ,_)
+         `(*? . ,_)
+         `(+? . ,_)
+         `(?? . ,_)
+         `(backref ,_))
+     (error "unsupported construct: %S" erx))))
+
+(defun jez-nfa-build-recognize-character-atoms (erx)
+  "NFA builder recognizer for character atoms.
+ERX is an ERX expression; return a `jez-nfa' instance or `nil' if
+no construct is recognized."
+  (pcase erx
+    ;; Actual characters
+    ((pred characterp)
+     (jez-nfa-character erx))
+    ((pred stringp)
+     (jez-nfa-build `(: ,@erx)))
+    ;; Character sets
+    ((or `not-newline `nonl)
+     (jez-nfa-build `(not (any ?\n))))
+    (`anything
+     (jez-nfa-build `(in (0 . ,(max-char)))))
+    (`(,(or `any `in `char) . ,sets)
+      (jez-nfa-from-via (apply #'jez-nfa-via-charsets sets)))
+    (`(not (any . ,sets))
+      (jez-nfa-from-via (apply #'jez-nfa-via-charsets-negated sets)))
+    ;; String regular expressions
     (`(regexp ,regexp)
       (require 'pcre2el)
-      (jez-nfa-build (funcall 'rxt-elisp-to-rx regexp)))
-    (_ (error "unrecognized erx construct: %S" erx))))
+      (jez-nfa-build (funcall 'rxt-elisp-to-rx regexp)))))
+
+(defvar jez-nfa-build-recognizers
+  '(jez-nfa-build-recognize-combinators
+    jez-nfa-build-recognize-character-atoms)
+  "List of matchers for erx syntax.")
+
+(defun jez-nfa-build (erx)
+  "Build an NFA matcher from extended rx pattern ERX.
+ERX patterns re normal `rx' patterns except that atoms can also
+be `jez-nfa' instances and some features of `rx' are not
+supported.  The unsupported features are:
+
+  * back-references
+  * non-greedy operators
+  * syntax table queries
+  * point, word, and {beginning-,end-}-of-buffer tests
+
+Groups are supported, but group capture is not, so all groups are
+treated as shy groups.
+
+The (regex REGEX) facility required the pcre2el library."
+
+  (cl-loop
+     for recognizer in jez-nfa-build-recognizers
+     for nfa = (funcall recognizer erx)
+     when nfa return nfa
+     finally do (error "unrecognized construct %S" erx)))
 
 (defun jez-nfa-index-departures (nfa)
   "Make a hash table mapping NFA states to lists of transitions.
@@ -563,7 +512,7 @@ final states to the accepting state."
                          from->tx
                          (list (jez-nfa-start nfa))))
          (nfa-accept (jez-nfa-accept nfa))
-         (dfa-accept (jez-nfa-create-state))
+         (dfa-accept (jez-nfa-state-create))
          (dfa-transitions nil)
          ;; Map ε-closures to DFA states
          (dfa-states (make-hash-table :test 'equal))
@@ -572,7 +521,7 @@ final states to the accepting state."
          (work-queue nil))
     (cl-flet ((enqueue-closure (closure)
                 (or (gethash closure dfa-states)
-                    (let ((new-dfa-state (jez-nfa-merge-states closure)))
+                    (let ((new-dfa-state (jez-nfa-state-merge closure)))
                       (puthash closure new-dfa-state dfa-states)
                       (push closure work-queue)
                       new-dfa-state))))
@@ -667,10 +616,10 @@ starting state."
                                       ((eq state (jez-nfa-accept nfa))
                                        "ACCEPT")
                                       (t sn)))
-                         (label (if (not (symbol-function state))
+                         (label (if (not (jez-nfa-state-tags state))
                                     label
                                   (format "%s\n%S" label
-                                          (symbol-function state)))))
+                                          (jez-nfa-state-tags state)))))
                     (princ (format "state_%d [label=%s];\n" sn label))
                     (puthash state sn state-numbers))))))
          (work-queue (list (jez-nfa-start nfa)))
@@ -738,8 +687,7 @@ testing the NFA engine."
      (lambda (state stateno)
        (unless (aref transitions stateno)
          (setf (aref transitions stateno) (make-char-table nil)))
-       (when (symbol-function state)
-         (aset entry-functions stateno (symbol-function state))))
+       (setf (aref entry-functions stateno) (jez-nfa-state-tags state)))
      state->stateno)
     (jez-nfa-simple-automaton--create
      :state nil
@@ -749,10 +697,8 @@ testing the NFA engine."
 (defun jez-nfa-simple-automaton-reset (automaton)
   "Reset a simple automaton to its start state."
   (setf (jez-nfa-simple-automaton-state automaton) 0)
-  (let ((entry-function
-         (aref (jez-nfa-simple-automaton-entry-functions automaton) 0)))
-    (when entry-function
-      (funcall entry-function))))
+  (mapc #'funcall
+        (aref (jez-nfa-simple-automaton-entry-functions automaton) 0)))
 
 (defun jez-nfa-simple-automaton-transition (automaton c)
   "Transition AUTOMATON to a new state on C.
@@ -763,12 +709,38 @@ C is a character.  Return the new state or nil for failure."
          (next-state (aref ct c)))
     (if (not next-state)
         nil
-      (let ((entry-function
-             (aref (jez-nfa-simple-automaton-entry-functions automaton)
-                   next-state)))
-        (when entry-function
-          (funcall entry-function))
-        (setf (jez-nfa-simple-automaton-state automaton) next-state)))))
+      (mapc #'funcall
+            (aref (jez-nfa-simple-automaton-entry-functions automaton)
+                  next-state))
+      (setf (jez-nfa-simple-automaton-state automaton) next-state))))
+
+(cl-defstruct (jez-lexer-ruleset
+                (:constructor jez-lexer-ruleset--create)))
+
+(defun jez-lex-ruleset-create (productions)
+  "Build a lexeer rule set.
+PRODUCTIONS is a list of productions of the form
+
+  (TOKEN PATTERN)
+
+where TOKEN is a symbol naming the production and PATTERN is
+valid input to `jez-nfa-build'.  `jex-lex-create' accepts a rule
+set to build a lexer.  Return a `jez-lexer-ruleset' instance."
+
+
+
+  )
+
+(defun jez-lex-ruleset-goal (ruleset erx)
+  "Make a lexer control pattern.
+RULESET is a `jez-lex-ruleset' instance; ERX is a pattern
+expression." )
+
+(defun jez-lex-create (ruleset &key goal)
+  "Build a lexer.
+RULESET is a set of rules compiled with `jez-lex-create-ruleset'.
+GOAL if non-`nil' is a special DFA over the rules.  Return a
+`jez-lexer' instance." )
 
 (cl-defstruct jez-lexer ())
 
@@ -781,46 +753,31 @@ matching the input against a set of patterns.  At each point, we
 simultaneously try all active patterns and use the one with the
 longest match.
 
-RULES is a list of matching rules and pragmas.  PRAGMA forms are
-lists beginning with keyword symbols and are described below.
-Each RULE is of the form
+RULES is a list of matching rules and pragmas.  Pragma forms are
+lists beginning with keyword symbols and are described below.  Non-pragma
+forms are productions of the form
 
-  (PATTERN TOKEN &key START GOTO)
+  (TOKEN PATTERN)
 
-PATTERN is either a `jez-nfa' instance, a sexp valid as input to
+where TOKEN is a symbol naming the terminal matched.  PATTERN is
+either a `jez-nfa' instance, a sexp valid as input to
 `jez-nfa-build', or a string in Emacs regular expression
-syntax[1].  TOKEN is a symbol naming the token that PATTERN
-matches.
+syntax[1].
 
 Order of rules is significant.  When more than one rule produces
 the longest match, the rule listed earlier has priority.
 
-START is a symbol naming a start condition or a list of these
-symbols.  The lexer will attempt to match PATTERN only when in
-the given start conditions.  All start conditions must be
-declared using the `:start-condition' pragma.
-
-Start conditions work just like start conditions in GNU Flex.  If
-START is nil or not supplied, the rule matches in the INITIAL
-condition and in all non-exclusive start conditions.  A START of
-`t' matches every start condition.
-
-GOTO names a start condition to which to transition after
-matching the rule.  If nil, do not change the current start
-state.
-
 The following pragmas are supported:
 
-  (:start-condition NAME &key EXCLUSIVE)
+  (:goal PATTERN)
 
-NAME is a symbol naming the start condition.  NAME cannot be nil
-or t.  EXCLUSIVE if non-nil indicates an exclusive start
-condition; start conditions are inclusive by default.  When the
-lexer is in an exclusive start condition, only rules tagged with
-that start condition are considered for potential matches; when
-the lexer is in an inclusive start condition, it tries to match
-both rules in that start condition and the rules in the default
-start condition.
+By default, the lexer attempts to match any token at any
+position.  :goal substitutes a pattern _over the tokens_ for this
+match-anything rule.
+
+:goal substitutes for the \"start conditions\" facility that
+other lexer generators support.  :goal effectively automates the
+generation of start conditions.
 
 1: The pcre2el library is required for string regular expression
 support.
@@ -842,8 +799,8 @@ support.
             ((keywordp (car rule))
              (error "unknown rule pragma %S" rule))))
     (let* (sc-rules (make-vector nr-sc nil))
-      ;; Extract rules.  For each start condition, amalgamate all the
-      ;; rules that can match.
+      ;; Extract rules.  For each start condition, group all the rules
+      ;; that can match.
       (dolist (rule rules)
         (unless ((keywordp (car rule)))
           (cl-destructuring-bind (pattern token &key start goto)

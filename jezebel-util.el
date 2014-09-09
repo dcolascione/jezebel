@@ -521,6 +521,9 @@ PREFIX, DIR-FLAG, and SUFFIX are as for `make-temp-file'.
       (when pbuffer
         (kill-buffer pbuffer)))))
 
+(defun jez-symbol-value (symbol &optional default)
+  (if (boundp symbol) (symbol-value symbol) default))
+
 (defun jez-combine-ranges (items)
   "Merge overlapping ranges and combine items in each range.
 ITEMS is a list, each item of which is ((LB . UB) . CONTENTS).  LB
