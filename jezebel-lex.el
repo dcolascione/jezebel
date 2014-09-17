@@ -465,9 +465,49 @@ no construct is recognized."
       (require 'pcre2el)
       (jez-nfa-build (funcall 'rxt-elisp-to-rx regexp)))))
 
+(defconst jez-nfa-character-predicates
+  '((line-start . bol)
+    (bol . bol)
+    (line-end . eol)
+    (eol . eol)
+    (string-start . bos)
+    (bos . bos)
+    (bot . bos)
+    (string-end . eos)
+    (eos . eos)
+    (eot . eos)
+    (buffer-start . buffer-start)
+    (buffer-end . buffer-end)
+    (point . point)
+    (word-start . bow)
+    (bow . bow)
+    (word-end . eow)
+    (eow . eow)
+    (word-boundary . word-boundary)
+    (symbol-start . symbol-start)
+    (symbol-end . symbol-end))
+  "Alist of zero-width predicates to match")
+
+(defun jez-nfa-build-recognize-predicates (erx predicate-alist)
+  (cond ((and (symbolp erx)
+              (assq erx predicate-alist))
+         (jez-nfa-from-via
+          (jez-nfa-via-create-predicate
+           `(:when . ,(cdr (assq erx predicate-alist))))))
+        ((and (eq (car-safe erx) 'not)
+              (assq (cadr erx) predicate-alist)
+              (null (cddr erx)))
+         (jez-nfa-from-via
+          (jez-nfa-via-create-predicate
+           `(:unless . ,(cdr (assq (cadr erx) predicate-alist))))))))
+
+(defun jez-nfa-build-recognize-character-predicates (erx)
+  (jez-nfa-build-recognize-predicates erx jez-nfa-character-predicates))
+
 (defvar jez-nfa-build-recognizers
   '(jez-nfa-build-recognize-combinators
-    jez-nfa-build-recognize-character-atoms)
+    jez-nfa-build-recognize-character-atoms
+    jez-nfa-build-recognize-character-predicates)
   "List of matchers for erx syntax.")
 
 (defun jez-nfa-build (erx)
@@ -594,7 +634,7 @@ any particular order. "
               (when (jez-nfa-via-predicate-p via)
                 (let* ((ps (jez-nfa-merge-predicates item-predicates via)))
                   (unless (eq ps :impossible)
-                    (let ((new-item (cons ps (jez-nfa-tx-to tx))))
+                    (let ((new-item (cons ps (list (jez-nfa-tx-to tx)))))
                       (unless (member new-item seen)
                         (push new-item seen)
                         (push new-item work-queue)))))))))))
@@ -634,12 +674,11 @@ when the given predicates are true."
                   (jez-nfa-p-closure-to-p-tree-1
                    p-closure
                    (cdr predicates)
-                   (cons this-predicate given))
+                   (cons `(:when . ,this-predicate) given))
                   (jez-nfa-p-closure-to-p-tree-1
                    p-closure
                    (cdr predicates)
-                   (cons (jez-nfa-invert-predicate this-predicate)
-                         given))))
+                   (cons `(:unless . ,this-predicate) given))))
     (cons :ε (jez-nfa-p-closure-derivative p-closure given))))
 
 (defun jez-nfa-p-closure-to-p-tree (p-closure)
@@ -738,12 +777,12 @@ an input character."
                   (t (cl-destructuring-bind (predicate yes . no) p-tree
                        (push (jez-nfa-tx-create
                               dfa-state
-                              predicate
+                              `(:when . ,predicate)
                               (p-enqueue yes))
                              dfa-transitions)
                        (push (jez-nfa-tx-create
                               dfa-state
-                              (jez-nfa-invert-predicate predicate)
+                              `(:unless . ,predicate)
                               (p-enqueue no))
                              dfa-transitions))))))
         (jez-nfa--create
@@ -935,7 +974,7 @@ PRODUCTIONS is a list of productions of the form
 where TOKEN is a symbol naming the production and PATTERN is
 valid input to `jez-nfa-build'.  `jex-lex-create' accepts a rule
 set to build a lexer.  Return a `jez-lexer-ruleset' instance."
-  
+
   )
 
 (defun jez-lex-ruleset-goal (_ruleset _erx)
