@@ -903,8 +903,9 @@ starting state."
   ;; Array mapping state numbers to functions to call on entry to each
   ;; state.
   entry-functions
-  ;; Array mapping state numbers to char tables.  Each char
-  ;; table maps to the next state number.
+  ;; Array mapping state numbers to char tables.  Each char table maps
+  ;; to the next state number.  Instead of a char table, we may map
+  ;; states to 3-vectors of [predicate yes-state no-state].
   transitions)
 
 (defun jez-nfa-simple-automaton-create (nfa)
